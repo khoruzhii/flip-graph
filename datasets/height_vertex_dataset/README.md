@@ -1,0 +1,2 @@
+# height-vertex dataset
+This folder contains a dataset in which a vertex (obtained by randomly moving through the graph from a random scheme for a random tensor) is matched with the height above the optimal flip-connectivity component.
