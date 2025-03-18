@@ -20,8 +20,8 @@ def plus_transition(VUW, shape):
     pos2 = torch.randint(0, r - 1, (N, ))
     pos2 = torch.where(pos2 >= pos1, pos2 + 1, pos2)
 
-    v1, u1, w1 = VUW[torch.arange(N), 0, pos1], VUW[torch.arange(N), 1, pos1], VUW[torch.arange(N), 1, pos1]
-    v2, u2, w2 = VUW[torch.arange(N), 0, pos2], VUW[torch.arange(N), 1, pos2], VUW[torch.arange(N), 1, pos2]
+    v1, u1, w1 = VUW[torch.arange(N), 0, pos1], VUW[torch.arange(N), 1, pos1], VUW[torch.arange(N), 2, pos1]
+    v2, u2, w2 = VUW[torch.arange(N), 0, pos2], VUW[torch.arange(N), 1, pos2], VUW[torch.arange(N), 2, pos2]
 
     result = VUW.clone()
     result[torch.arange(N), 0, pos1] = v1 ^ v2
