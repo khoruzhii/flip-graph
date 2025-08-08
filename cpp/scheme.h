@@ -12,6 +12,7 @@ class Scheme {
 public:
     std::vector<U64> data;  // [u0,v0,w0, u1,v1,w1, ...]
     int n_orbits;
+    int orank;  // number of active (non-zero) orbits
     
     // Core data structures
     std::unordered_map<U64, std::vector<int>> value_map;  // value -> list of positions
