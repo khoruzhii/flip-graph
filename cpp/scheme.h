@@ -1,5 +1,5 @@
 // scheme.h
-#pragma once 
+#pragma once
 
 #include <vector>
 #include <unordered_map>
@@ -14,9 +14,12 @@ public:
     int n_orbits;
     
     // Core data structures
-    std::unordered_map<U64, std::vector<int>> value_to_indices;  // value -> positions
-    std::vector<U64> twoplusl;                                   // values with 2+ occurrences
-    std::unordered_map<U64, int> twoplus_index;                  // value -> index in twoplusl
+    std::unordered_map<U64, std::vector<int>> value_map;  // value -> list of positions
+    std::vector<U64> flippable;  // values that appear 2+ times in different orbits
+    
+    // Lookup tables for cyclic permutations
+    std::vector<int> next;  // next[i] = orbit(i)*3 + (pos(i)+1)%3
+    std::vector<int> prev;  // prev[i] = orbit(i)*3 + (pos(i)+2)%3
     
     // Random generator
     std::mt19937 rng;
@@ -24,15 +27,19 @@ public:
     // Constructor
     Scheme(const std::vector<U64>& initial_data, int seed = 42);
     
-    // Core operations
+    // Perform one flip operation
     bool flip();
     
-    // Statistics
+    // Debug output
     void print() const;
-    void print_matches() const;
-    int count_nonzero() const;
     
 private:
-    // Helper to maintain twoplusl
-    void update_twoplus(U64 value, size_t new_count);
+    // Find two indices from different orbits
+    bool find_different_orbits(const std::vector<int>& indices, U64 val, int& idx1, int& idx2);
+    
+    // Check if value should be in flippable list
+    bool is_flippable(U64 value) const;
+    
+    // Update flippable list after value count changes
+    void upd_flippable(U64 value);
 };

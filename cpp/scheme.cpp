@@ -2,166 +2,141 @@
 #include "scheme.h"
 #include <iostream>
 #include <algorithm>
-#include <set>
 
 Scheme::Scheme(const std::vector<U64>& initial_data, int seed) : rng(seed) {
     data = initial_data;
     n_orbits = data.size() / 3;
     
-    // Build initial structures
+    // Initialize lookup tables for cyclic permutations
+    next.resize(n_orbits * 3);
+    prev.resize(n_orbits * 3);
+    for (int i = 0; i < n_orbits * 3; i++) {
+        int orb = i / 3;
+        int pos = i % 3;
+        next[i] = orb * 3 + (pos + 1) % 3;
+        prev[i] = orb * 3 + (pos + 2) % 3;
+    }
+    
+    // Build initial value_map
     for (int i = 0; i < n_orbits * 3; i++) {
         if (data[i] != 0) {
-            value_to_indices[data[i]].push_back(i);
+            value_map[data[i]].push_back(i);
         }
     }
     
-    // Initialize twoplusl
-    for (const auto& [value, indices] : value_to_indices) {
-        if (indices.size() >= 2) {
-            // Check if indices are from different orbits
-            std::set<int> orbits;
-            for (int idx : indices) {
-                orbits.insert(idx / 3);
-                if (orbits.size() >= 2) break;
-            }
-            
-            if (orbits.size() >= 2) {
-                twoplus_index[value] = twoplusl.size();
-                twoplusl.push_back(value);
-            }
+    // Initialize flippable with values that appear 2+ times in different orbits
+    for (const auto& [value, indices] : value_map) {
+        if (is_flippable(value)) {
+            flippable.push_back(value);
         }
     }
 }
 
-void Scheme::update_twoplus(U64 value, size_t new_count) {
-    if (new_count < 2) {
-        // Remove from twoplusl if present
-        auto it = twoplus_index.find(value);
-        if (it != twoplus_index.end()) {
-            int idx = it->second;
-            twoplus_index.erase(it);
-            
-            if (idx != twoplusl.size() - 1) {
-                twoplusl[idx] = twoplusl.back();
-                twoplus_index[twoplusl[idx]] = idx;
-            }
-            twoplusl.pop_back();
-        }
-        return;
+bool Scheme::is_flippable(U64 value) const {
+    auto it = value_map.find(value);
+    if (it == value_map.end() || it->second.size() < 2) {
+        return false;
     }
     
     // Check if indices are from different orbits
-    const auto& indices = value_to_indices[value];
-    std::set<int> orbits;
-    for (int idx : indices) {
-        orbits.insert(idx / 3);
-        if (orbits.size() >= 2) break;  // Found 2+ different orbits
-    }
-    
-    bool has_different_orbits = (orbits.size() >= 2);
-    auto it = twoplus_index.find(value);
-    bool in_twoplus = (it != twoplus_index.end());
-    
-    if (has_different_orbits && !in_twoplus) {
-        // Add to twoplusl
-        twoplus_index[value] = twoplusl.size();
-        twoplusl.push_back(value);
-    } else if (!has_different_orbits && in_twoplus) {
-        // Remove from twoplusl
-        int idx = it->second;
-        twoplus_index.erase(it);
-        
-        if (idx != twoplusl.size() - 1) {
-            twoplusl[idx] = twoplusl.back();
-            twoplus_index[twoplusl[idx]] = idx;
+    const auto& indices = it->second;
+    int first_orbit = indices[0] / 3;
+    for (size_t i = 1; i < indices.size(); i++) {
+        if (indices[i] / 3 != first_orbit) {
+            return true;  // Found different orbit
         }
-        twoplusl.pop_back();
+    }
+    return false;
+}
+
+void Scheme::upd_flippable(U64 value) {
+    bool should_be = is_flippable(value);
+    
+    // Check if already in flippable
+    auto pos = std::find(flippable.begin(), flippable.end(), value);
+    bool is_in = (pos != flippable.end());
+    
+    if (should_be && !is_in) {
+        // Add to flippable
+        flippable.push_back(value);
+    } else if (!should_be && is_in) {
+        // Remove from flippable
+        flippable.erase(pos);
     }
 }
 
-bool Scheme::flip() {
-    if (twoplusl.empty()) return false;
-    
-    // 1. Select random value (guaranteed to have indices from different orbits)
-    U64 selected_value = twoplusl[rng() % twoplusl.size()];
-    const auto& indices = value_to_indices[selected_value];
-    
-    // 2. Find two indices from different orbits
-    int idx1 = -1, idx2 = -1;
-    
+bool Scheme::find_different_orbits(const std::vector<int>& indices, U64 val, int& idx1, int& idx2) {
     for (int attempts = 0; attempts < 100; attempts++) {
         int i1 = rng() % indices.size();
         int i2 = rng() % indices.size();
         if (i1 != i2 && indices[i1] / 3 != indices[i2] / 3) {
             idx1 = indices[i1];
             idx2 = indices[i2];
-            break;
+            return true;
         }
     }
     
-    if (idx1 == -1) return false;  // Should rarely happen now
+    std::cerr << "Error: couldn't find indices from different orbits for value " << val << "\n";
+    return false;
+}
+
+bool Scheme::flip() {
+    if (flippable.empty()) return false;
     
-    // 3. Calculate indices to modify
-    int orb1 = idx1 / 3, sym1 = idx1 % 3;
-    int orb2 = idx2 / 3, sym2 = idx2 % 3;
-    int idx1_next = orb1 * 3 + (sym1 + 1) % 3;
-    int idx2_prev = orb2 * 3 + (sym2 + 2) % 3;
+    // Select random value from flippable
+    U64 val = flippable[rng() % flippable.size()];
+    const auto& indices = value_map[val];
     
-    // 4. Store old values BEFORE modifying data
-    U64 old_val1 = data[idx1_next];
-    U64 old_val2 = data[idx2_prev];
-    
-    // 5. Perform XOR
-    data[idx1_next] ^= data[orb2 * 3 + (sym2 + 1) % 3];
-    data[idx2_prev] ^= data[orb1 * 3 + (sym1 + 2) % 3];
-    
-    // 6. Get new values AFTER XOR
-    U64 new_val1 = data[idx1_next];
-    U64 new_val2 = data[idx2_prev];
-    
-    // 7. Collect all affected values for twoplus update
-    std::set<U64> affected_values;
-    if (old_val1 != 0) affected_values.insert(old_val1);
-    if (old_val2 != 0) affected_values.insert(old_val2);
-    if (new_val1 != 0) affected_values.insert(new_val1);
-    if (new_val2 != 0) affected_values.insert(new_val2);
-    
-    // 8. Remove old indices from value_to_indices
-    // IMPORTANT: Handle both indices even if they have the same value
-    if (old_val1 != 0) {
-        auto& vec = value_to_indices[old_val1];
-        vec.erase(std::remove(vec.begin(), vec.end(), idx1_next), vec.end());
-        if (vec.empty()) {
-            value_to_indices.erase(old_val1);
-        }
+    // Find two indices from different orbits
+    int idx1, idx2;
+    if (!find_different_orbits(indices, val, idx1, idx2)) {
+        return false;
     }
     
-    if (old_val2 != 0) {
-        auto& vec = value_to_indices[old_val2];
-        vec.erase(std::remove(vec.begin(), vec.end(), idx2_prev), vec.end());
-        if (vec.empty()) {
-            value_to_indices.erase(old_val2);
-        }
+    // Use lookup tables for cyclic indices
+    int j1 = next[idx1];
+    int j2 = prev[idx2];
+    
+    // Store old values
+    U64 old1 = data[j1];
+    U64 old2 = data[j2];
+    
+    // XOR modifications using lookup tables
+    data[j1] ^= data[next[idx2]];
+    data[j2] ^= data[prev[idx1]];
+    
+    // Get new values
+    U64 new1 = data[j1];
+    U64 new2 = data[j2];
+    
+    // Update value_map
+    // Remove old indices
+    if (old1 != 0) {
+        auto& vec1 = value_map[old1];
+        vec1.erase(std::remove(vec1.begin(), vec1.end(), j1), vec1.end());
+        if (vec1.empty()) value_map.erase(old1);
     }
     
-    // 9. Add new indices to value_to_indices
-    // IMPORTANT: Add both indices even if they have the same value
-    if (new_val1 != 0) {
-        value_to_indices[new_val1].push_back(idx1_next);
+    if (old2 != 0) {
+        auto& vec2 = value_map[old2];
+        vec2.erase(std::remove(vec2.begin(), vec2.end(), j2), vec2.end());
+        if (vec2.empty()) value_map.erase(old2);
     }
     
-    if (new_val2 != 0) {
-        value_to_indices[new_val2].push_back(idx2_prev);
+    // Add new indices
+    if (new1 != 0) {
+        value_map[new1].push_back(j1);
     }
     
-    // 10. Update twoplusl for all affected values
-    for (U64 val : affected_values) {
-        if (value_to_indices.count(val)) {
-            update_twoplus(val, value_to_indices[val].size());
-        } else {
-            update_twoplus(val, 0);
-        }
+    if (new2 != 0) {
+        value_map[new2].push_back(j2);
     }
+    
+    // Update flippable for affected values
+    if (old1 != 0) upd_flippable(old1);
+    if (old2 != 0 && old2 != old1) upd_flippable(old2);
+    if (new1 != 0 && new1 != old1 && new1 != old2) upd_flippable(new1);
+    if (new2 != 0 && new2 != old1 && new2 != old2 && new2 != new1) upd_flippable(new2);
     
     return true;
 }
@@ -173,20 +148,4 @@ void Scheme::print() const {
                   << data[i*3+1] << " " 
                   << data[i*3+2] << "\n";
     }
-}
-
-void Scheme::print_matches() const {
-    std::cout << "Unique values: " << value_to_indices.size() << "\n";
-    std::cout << "Values with 2+ occurrences: " << twoplusl.size() << "\n";
-    
-    // Show some statistics
-    int total_occurrences = 0;
-    int max_occurrences = 0;
-    for (const auto& [val, indices] : value_to_indices) {
-        total_occurrences += indices.size();
-        max_occurrences = std::max(max_occurrences, (int)indices.size());
-    }
-    
-    std::cout << "Total non-zero positions: " << total_occurrences << "\n";
-    std::cout << "Max occurrences of single value: " << max_occurrences << "\n";
 }
