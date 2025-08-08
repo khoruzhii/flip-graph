@@ -20,15 +20,14 @@ public:
     // Plus transition
     bool plus();
     
-    // Get data
+    // Get helpers
     const std::vector<U64>& get_data() const { return data; }
-    
-    // Get number of non-zero orbits
-    int get_orank() const;
+    int get_orank() { return orank; }
     
 private:
     std::vector<U64> data;  // [u0,v0,w0, u1,v1,w1, ...]
     int n_orbits;
+    int orank;
     
     // Core data structures
     std::unordered_map<U64, std::vector<int>> positions;  // value -> list of positions

@@ -30,6 +30,12 @@ Scheme::Scheme(const std::vector<U64>& initial_data, int seed) : rng(seed) {
             flippable.push_back(value);
         }
     }
+
+    // Initialize orank value
+    orank = 0;
+    for (int i = 0; i < n_orbits; i++) {
+        if (data[i*3] != 0) orank++;
+    }
 }
 
 // ========================================================
@@ -83,17 +89,6 @@ void Scheme::upd_flippable(U64 value) {
         flippable.erase(pos);
     }
 }
-
-int Scheme::get_orank() const {
-    int count = 0;
-    for (int i = 0; i < n_orbits; i++) {
-        if (data[i*3] != 0) {  // Check only first component
-            count++;
-        }
-    }
-    return count;
-}
-
 
 // ========================================================
 // ========================= FLIP =========================
@@ -193,6 +188,9 @@ void Scheme::zero_orbit(int orbit) {
             data[idx] = 0;
         }
     }
+
+    // Update orank value
+    orank--;
 }
 
 // ========================================================
@@ -277,5 +275,6 @@ bool Scheme::plus() {
     for (U64 v : affected)
         upd_flippable(v);
     
+    orank++;
     return true;
 }
