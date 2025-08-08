@@ -14,8 +14,11 @@ public:
     // Constructor
     Scheme(const std::vector<U64>& initial_data, int seed = 42);
     
-    // Perform one flip operation
+    // One flip operation
     bool flip();
+
+    // Plus transition
+    bool plus();
     
     // Get data
     const std::vector<U64>& get_data() const { return data; }
@@ -40,7 +43,8 @@ private:
     std::mt19937 rng;
     
     // Sample two indices from different orbits
-    bool sample_orbits(int& idx1, int& idx2);
+    bool sample_orbits_flip(int& idx1, int& idx2);
+    bool sample_orbits_plus(int& u1, int& u2);
     
     // Zero out entire orbit
     void zero_orbit(int orbit);
@@ -54,4 +58,7 @@ private:
     
     // Update flippable list after value count changes
     void upd_flippable(U64 value);
+
+    // Returns first empty orbit index 
+    int get_empty_orbit() const;
 };
