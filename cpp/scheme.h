@@ -7,6 +7,7 @@
 #include <random>
 #include <cstdint>
 
+using U16 = std::uint16_t;
 using U64 = std::uint64_t;
 
 class Scheme {
@@ -27,7 +28,7 @@ public:
 private:
     std::vector<U64> data;  // [u0,v0,w0, u1,v1,w1, ...]
     int n_orbits;
-    int orank;
+    U16 orank;
     
     // Core data structures
     std::unordered_map<U64, std::vector<int>> positions;  // value -> list of positions
