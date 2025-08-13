@@ -2,63 +2,56 @@
 #pragma once
 
 #include <vector>
-#include <unordered_map>
-#include <set>
 #include <random>
 #include <cstdint>
 
-using U16 = std::uint16_t;
+#include "hash_dict.h"
+
 using U64 = std::uint64_t;
 
 class Scheme {
 public:
-    // Constructor
-    Scheme(const std::vector<U64>& initial_data, int seed = 42);
-    
-    // One flip operation
+    Scheme(const std::vector<U64>& initial, int sym, uint32_t seed);
+
     bool flip();
-
-    // Plus transition
     bool plus();
-    
-    // Get helpers
-    const std::vector<U64>& get_data() const { return data; }
-    int get_orank() { return orank; }
-    
-private:
-    std::vector<U64> data;  // [u0,v0,w0, u1,v1,w1, ...]
-    int n_orbits;
-    U16 orank;
-    
-    // Core data structures
-    std::unordered_map<U64, std::vector<int>> positions;  // value -> list of positions
-    std::vector<U64> flippable;  // values that appear 2+ times in different orbits
-    std::set<U64> affected;  // values affected by current flip
-    
-    // Lookup tables for cyclic permutations
-    std::vector<int> next;  // next[i] = orbit(i)*3 + (pos(i)+1)%3
-    std::vector<int> prev;  // prev[i] = orbit(i)*3 + (pos(i)+2)%3
-    
-    // Random generator
-    std::mt19937 rng;
-    
-    // Sample two indices from different orbits
-    bool sample_orbits_flip(int& idx1, int& idx2);
-    bool sample_orbits_plus(int& u1, int& u2);
-    
-    // Zero out entire orbit
-    void zero_orbit(int orbit);
-    
-    // Helper methods for positions map
-    void positions_del(U64 val, int idx);
-    void positions_add(U64 val, int idx);
-    
-    // Check if value should be in flippable list
-    bool is_flippable(U64 value) const;
-    
-    // Update flippable list after value count changes
-    void upd_flippable(U64 value);
 
-    // Returns first empty orbit index 
-    int get_empty_orbit() const;
+    const std::vector<U64>& get_data() const { return data; }
+    int  get_orank() const { return rank / sym; }
+    int  get_rank()  const { return rank; }
+
+private:
+    void add(int r, U64 v); // add row index r to the block of value v
+    void del(int r, U64 v); // remove row index r from the block of value v
+
+    bool flip3();
+    bool flip6();
+    bool plus3();
+    bool plus6();
+
+private:
+    int sym{3};
+    int n{0};
+    int rank{0};
+    std::mt19937 rng{123456u};
+
+    std::vector<U64> data;     // u,v,w repeating per triple
+    std::vector<int> idx_next; // v index per row
+    std::vector<int> idx_prev; // w index per row
+
+    HashDict unique;
+    HashDict flippable_idx;
+    std::vector<U64> flippable;
+
+    // For each distinct value keep a block of length (n+1): [len, idx1, idx2, ..., idx_len]
+    std::vector<int> pos;
+    std::vector<int> free_slots;
+
+    // 0 if i and j are in the same orbit; 1 otherwise
+    std::vector<std::vector<uint8_t>> permit;
+
+    // Pair selection tables
+    std::vector<int> pair_starts;
+    std::vector<int> pair_i;
+    std::vector<int> pair_j;
 };

@@ -1,280 +1,454 @@
 // scheme.cpp
 #include "scheme.h"
-#include <iostream>
-#include <algorithm>
+#include <cassert>
 
-Scheme::Scheme(const std::vector<U64>& initial_data, int seed) : rng(seed) {
-    data = initial_data;
-    n_orbits = data.size() / 3;
-    
-    // Initialize lookup tables for cyclic permutations
-    next.resize(n_orbits * 3);
-    prev.resize(n_orbits * 3);
-    for (int i = 0; i < n_orbits * 3; i++) {
-        int orb = i / 3;
-        int pos = i % 3;
-        next[i] = orb * 3 + (pos + 1) % 3;
-        prev[i] = orb * 3 + (pos + 2) % 3;
+Scheme::Scheme(const std::vector<U64>& initial, int sym_in, uint32_t seed)
+    : sym(sym_in), rng(seed) {
+    assert(sym == 3 || sym == 6);
+
+    data = initial;
+    n = static_cast<int>(data.size());
+    assert(n % 3 == 0);
+
+    // Build index helpers for v and w components per row
+    idx_next.assign(n, 0);
+    idx_prev.assign(n, 0);
+    for (int i = 0; i < n; i += 3) {
+        idx_next[i]     = i + 2; idx_prev[i]     = i + 1;
+        idx_next[i + 1] = i;     idx_prev[i + 1] = i + 2;
+        idx_next[i + 2] = i + 1; idx_prev[i + 2] = i;
     }
-    
-    // Build initial positions map
-    for (int i = 0; i < n_orbits * 3; i++) {
-        if (data[i] != 0) {
-            positions[data[i]].push_back(i);
-        }
-    }
-    
-    // Initialize flippable with values that appear 2+ times in different orbits
-    for (const auto& [value, indices] : positions) {
-        if (is_flippable(value)) {
-            flippable.push_back(value);
+
+    // Permit matrix: 0 if same orbit, 1 otherwise
+    permit.assign(n, std::vector<uint8_t>(n, 1));
+    for (int i = 0; i < n; ++i) {
+        for (int j = 0; j < n; ++j) {
+            permit[i][j] = (i / sym == j / sym) ? 0 : 1;
         }
     }
 
-    // Initialize orank value
-    orank = 0;
-    for (int i = 0; i < n_orbits; i++) {
-        if (data[i*3] != 0) orank++;
+    // Reset dictionaries and lists
+    unique = HashDict();
+    flippable_idx = HashDict();
+    flippable.clear();
+
+    // Allocate position blocks: for each distinct value a block [len, idx1, ...]
+    const int block_len = n + 1;
+    pos.assign(n * block_len, 0);
+    free_slots.clear();
+    free_slots.reserve(n);
+    for (int i = 0; i < n; ++i) {
+        int b = i * block_len;
+        free_slots.push_back(b);
     }
-}
 
-// ========================================================
-// ======================== HELPERS =======================
-// ========================================================
+    // Initial fill of unique / flippable based on current data
+    rank = 0;
+    for (int i = 0; i < n; ++i) {
+        U64 m = data[i];
+        if (m == 0ULL) continue;
 
-void Scheme::positions_del(U64 val, int idx) {
-    auto& vec = positions[val];
-    auto it = std::find(vec.begin(), vec.end(), idx);
-    if (it != vec.end()) {
-        *it = vec.back();  // Replace with last element
-        vec.pop_back();    // Remove last
-    }
-    if (vec.empty())
-        positions.erase(val);
-}
-
-void Scheme::positions_add(U64 val, int idx) {
-    positions[val].push_back(idx);
-}
-
-bool Scheme::is_flippable(U64 value) const {
-    auto it = positions.find(value);
-    if (it == positions.end() || it->second.size() < 2) {
-        return false;
-    }
-    
-    // Check if indices are from different orbits
-    const auto& indices = it->second;
-    int first_orbit = indices[0] / 3;
-    for (size_t i = 1; i < indices.size(); i++) {
-        if (indices[i] / 3 != first_orbit) {
-            return true;  // Found different orbit
+        if (unique.contains(m)) {
+            int b = unique.getvaluex(m);
+            int l = pos[b];
+            ++l;
+            pos[b + l] = i;
+            pos[b] = l;
+            if (!flippable_idx.contains(m)) {
+                flippable_idx.addx(m, static_cast<int>(flippable.size()));
+                flippable.push_back(m);
+            }
+        } else {
+            int b = free_slots.back(); free_slots.pop_back();
+            unique.addx(m, b);
+            pos[b] = 1;
+            pos[b + 1] = i;
         }
+        rank += 1;
     }
-    return false;
-}
 
-void Scheme::upd_flippable(U64 value) {
-    bool flag = is_flippable(value);
-    
-    // Check if already in flippable
-    auto pos = std::find(flippable.begin(), flippable.end(), value);
-    bool is_in = (pos != flippable.end());
-    
-    if (flag && !is_in) {
-        // Add to flippable
-        flippable.push_back(value);
-    } else if (!flag && is_in) {
-        // Remove from flippable
-        flippable.erase(pos);
-    }
-}
-
-// ========================================================
-// ========================= FLIP =========================
-// ========================================================
-
-bool Scheme::sample_orbits_flip(int& idx1, int& idx2) {
-    if (flippable.empty()) return false;
-    
-    // Select random value from flippable
-    U64 val = flippable[rng() % flippable.size()];
-    const auto& indices = positions[val];
-    
-    // Find two indices from different orbits
-    for (int attempts = 0; attempts < 100; attempts++) {
-        int i1 = rng() % indices.size();
-        int i2 = rng() % indices.size();
-        if (i1 != i2 && indices[i1] / 3 != indices[i2] / 3) {
-            idx1 = indices[i1];
-            idx2 = indices[i2];
-            return true;
+    // Build pair selection tables (covers lengths up to 79 as in the original)
+    pair_starts.clear(); pair_i.clear(); pair_j.clear();
+    pair_starts.reserve(100);
+    pair_i.reserve(6400);
+    pair_j.reserve(6400);
+    pair_starts.push_back(0);
+    pair_starts.push_back(0);
+    for (int x = 1; x < 80; ++x) {
+        for (int y = 0; y < x; ++y) {
+            pair_i.push_back(x);
+            pair_j.push_back(y);
+            pair_i.push_back(y);
+            pair_j.push_back(x);
         }
+        pair_starts.push_back(static_cast<int>(pair_i.size()));
     }
-    
-    std::cerr << "Error: couldn't find indices from different orbits for value " << val << "\n";
-    return false;
+}
+
+void Scheme::del(int r, U64 v) {
+    int b = unique.getvalue(v);
+    int l = pos[b];
+    if (l == 2) {
+        // Will drop from 2 -> 1; remove this value from flippable
+        flippable_idx.lasthash = unique.lasthash;
+        int idx = flippable_idx.getvaluex(v);
+        U64 last_val = flippable.back();
+        flippable_idx.replace(last_val, idx);
+        flippable[idx] = last_val;
+        flippable.pop_back();
+        flippable_idx.lasthash = unique.lasthash;
+        flippable_idx.removex(v);
+    }
+    if (l == 1) {
+        // Now 0 -> release the block and drop from unique
+        free_slots.push_back(b);
+        unique.removex(v);
+    } else {
+        // Remove row r from the block by rotating from the end
+        int i = b + l;
+        int x = pos[i];
+        while (x != r) {
+            --i;
+            int y = x;
+            x = pos[i];
+            pos[i] = y;
+        }
+        pos[b] = l - 1;
+    }
+}
+
+void Scheme::add(int r, U64 v) {
+    int present = unique.contains(v);
+    if (present) {
+        int b = unique.getvaluex(v);
+        int l = pos[b];
+        if (l == 1) {
+            // Will become multiplicity 2 -> insert into flippable
+            flippable_idx.lasthash = unique.lasthash;
+            flippable_idx.addx(v, static_cast<int>(flippable.size()));
+            flippable.push_back(v);
+        }
+        ++l;
+        pos[b + l] = r;
+        pos[b] = l;
+    } else {
+        int b = free_slots.back(); free_slots.pop_back();
+        unique.addx(v, b);
+        pos[b + 1] = r;
+        pos[b] = 1;
+    }
 }
 
 bool Scheme::flip() {
-    // Clear affected values from previous flip
-    affected.clear();
-    
-    // Sample two indices from different orbits
-    int idx1, idx2;
-    if (!sample_orbits_flip(idx1, idx2)) {
-        return false;
-    }
-    
-    // Use lookup tables for cyclic indices
-    int j1 = next[idx1];
-    int j2 = prev[idx2];
-    
-    // Store old values
-    U64 old1 = data[j1];
-    U64 old2 = data[j2];
-    
-    // XOR modifications using lookup tables
-    data[j1] ^= data[next[idx2]];
-    data[j2] ^= data[prev[idx1]];
-    
-    // Get new values
-    U64 new1 = data[j1];
-    U64 new2 = data[j2];
-    
-    // Update positions for the changed positions and zero out orbits if any component became 0
-    positions_del(old1, j1);
-    positions_del(old2, j2);
-    affected.insert(old1);
-    affected.insert(old2);
-    
-    if (new1 != 0) {
-        positions_add(new1, j1);
-        affected.insert(new1);
-    } else {
-        zero_orbit(j1 / 3);
-    }
-    
-    if (new2 != 0) {
-        positions_add(new2, j2);
-        affected.insert(new2);
-    } else {
-        zero_orbit(j2 / 3);
-    }
-    
-    // Update flippable for all affected values
-    for (U64 v : affected) {
-        upd_flippable(v);
-    }
-    
-    return true;
-}
-
-void Scheme::zero_orbit(int orbit) {
-    // Collect values from orbit before zeroing
-    for (int i = 0; i < 3; i++) {
-        int idx = orbit * 3 + i;
-        if (data[idx] != 0) {
-            affected.insert(data[idx]);
-        }
-    }
-    
-    // Remove all components from positions and zero them
-    for (int i = 0; i < 3; i++) {
-        int idx = orbit * 3 + i;
-        U64 val = data[idx];
-        if (val != 0) {
-            positions_del(val, idx);
-            data[idx] = 0;
-        }
-    }
-
-    // Update orank value
-    orank--;
-}
-
-// ========================================================
-// ========================= PLUS =========================
-// ========================================================
-
-int Scheme::get_empty_orbit() const {
-    for (int i = 0; i < n_orbits; i++) {
-        if (data[i*3] == 0) {
-            return i;
-        }
-    }
-    return -1;
-}
-
-bool Scheme::sample_orbits_plus(int& u1, int& u2) {
-    for (int attempts = 0; attempts < 1000; attempts++) {
-        int o1 = rng() % n_orbits;
-        int o2 = rng() % n_orbits;
-        if (o1 != o2 && data[o1*3] && data[o2*3]) {
-            u1 = o1 * 3;
-            u2 = o2 * 3;
-            return true;
-        }
-    }
-    return false;
+    if (flippable.empty()) return false;
+    return (sym == 3) ? flip3() : flip6();
 }
 
 bool Scheme::plus() {
-    // Find empty orbit
-    int empty_orbit = get_empty_orbit();
-    if (empty_orbit == -1) return false;
-    
-    // Sample two non-empty orbits
-    int u1, u2;
-    if (!sample_orbits_plus(u1, u2)) return false;
+    // Find first free row (u component is zero)
+    int r = -1;
+    for (int i = 0; i < n; ++i) { if (data[i] == 0ULL) { r = i; break; } }
+    if (r < 0) return false;
+    return (sym == 3) ? plus3() : plus6();
+}
 
-    // Component indices
-    int v1 = next[u1], w1 = prev[u1];
-    int v2 = next[u2], w2 = prev[u2];
-    int u3 = empty_orbit * 3;
-    int v3 = next[u3], w3 = prev[u3];
-    
-    // Save old values
-    U64 old[3] = {data[v1], data[u2], data[w2]};
-    U64 val_u1 = data[u1], val_v2 = data[v2], val_w1 = data[w1];
-    
-    // Clear affected
-    affected.clear();
-    
-    // Update positions for changed values
-    positions_del(old[0], v1);
-    positions_del(old[1], u2);
-    positions_del(old[2], w2);
-    
-    // Apply plus transition
-    U64 new_vals[6] = {
-        old[0] ^ val_v2,      // v1 ^= v2
-        val_u1,               // u2 = u1
-        val_w1 ^ old[2],      // w2 = w1 ^ w2
-        val_u1 ^ old[1],      // u3 = u1 ^ u2
-        val_v2,               // v3 = v2
-        old[2]                // w3 = w2
-    };
-    
-    int indices[6] = {v1, u2, w2, u3, v3, w3};
-    
-    // Set new values and update positions
-    for (int i = 0; i < 6; i++) {
-        data[indices[i]] = new_vals[i];
-        if (new_vals[i]) {
-            positions_add(new_vals[i], indices[i]);
-            affected.insert(new_vals[i]);
+bool Scheme::flip3() {
+    while (true) {
+        unsigned int sample = rng();
+        U64 val = flippable[sample % flippable.size()];
+        int b = unique.getvalue(val);
+        int l = pos[b];
+        ++b; // point to first index entry
+        int p, q;
+        if (l == 2) {
+            if (sample & 65536U) {
+                p = pos[b];
+                q = pos[b + 1];
+            } else {
+                p = pos[b + 1];
+                q = pos[b];
+            }
+        } else {
+            int x = static_cast<int>((sample >> 16) % pair_starts[l]);
+            p = pos[b + pair_i[x]];
+            q = pos[b + pair_j[x]];
         }
+        if (!permit[p][q]) continue;
+
+        U64 pv = data[idx_next[p]];
+        U64 pw = data[idx_prev[p]];
+        U64 qv = data[idx_next[q]];
+        U64 qw = data[idx_prev[q]];
+        U64 pv_new = qv ^ pv;
+        U64 qw_new = qw ^ pw;
+
+        del(idx_next[p], pv); add(idx_next[p], pv_new); data[idx_next[p]] = pv_new;
+        del(idx_prev[q], qw); add(idx_prev[q], qw_new); data[idx_prev[q]] = qw_new;
+
+        if (pv_new == 0ULL) {
+            U64 pu = data[p];
+            del(p, pu);
+            del(idx_next[p], pv_new);
+            del(idx_prev[p], pw);
+            data[p] = 0ULL;
+            data[idx_prev[p]] = 0ULL;
+            rank -= 3;
+        }
+
+        if (qw_new == 0ULL) {
+            U64 qu = data[q];
+            del(q, qu);
+            del(idx_next[q], qv);
+            del(idx_prev[q], qw_new);
+            data[q] = 0ULL;
+            data[idx_next[q]] = 0ULL;
+            rank -= 3;
+        }
+
+        return true;
     }
-    
-    // Add old values to affected
-    for (U64 v : old)
-        if (v) affected.insert(v);
-    
-    // Update flippable for affected values
-    for (U64 v : affected)
-        upd_flippable(v);
-    
-    orank++;
+}
+
+bool Scheme::flip6() {
+    while (true) {
+        unsigned int sample = rng();
+        U64 val = flippable[sample % flippable.size()];
+        int b = unique.getvalue(val);
+        int l = pos[b];
+        ++b;
+        int p, q;
+        if (l == 2) {
+            if (sample & 65536U) {
+                p = pos[b];
+                q = pos[b + 1];
+            } else {
+                p = pos[b + 1];
+                q = pos[b];
+            }
+        } else {
+            int x = static_cast<int>((sample >> 16) % pair_starts[l]);
+            p = pos[b + pair_i[x]];
+            q = pos[b + pair_j[x]];
+        }
+        if (!permit[p][q]) continue;
+
+        int pp = (p % 6 < 3) ? p + 3 : p - 3;
+        int qq = (q % 6 < 3) ? q + 3 : q - 3;
+
+        U64 pu = data[p],  pv = data[idx_next[p]],  pw = data[idx_prev[p]];
+        U64 qu = data[q],  qv = data[idx_next[q]],  qw = data[idx_prev[q]];
+        U64 ppu = data[pp], ppv = data[idx_next[pp]], ppw = data[idx_prev[pp]];
+        U64 qqu = data[qq], qqv = data[idx_next[qq]], qqw = data[idx_prev[qq]];
+
+        U64 pv_new  = qv  ^ pv;
+        U64 qw_new  = qw  ^ pw;
+        U64 ppv_new = qqv ^ ppv;
+        U64 qqw_new = qqw ^ ppw;
+
+        // Apply v-updates on p and pp
+        del(idx_next[p],  pv);  add(idx_next[p],  pv_new);  data[idx_next[p]]  = pv_new;
+        del(idx_next[pp], ppv); add(idx_next[pp], ppv_new); data[idx_next[pp]] = ppv_new;
+
+        // Apply w-updates on q and qq
+        del(idx_prev[q],  qw);  add(idx_prev[q],  qw_new);  data[idx_prev[q]]  = qw_new;
+        del(idx_prev[qq], qqw); add(idx_prev[qq], qqw_new); data[idx_prev[qq]] = qqw_new;
+
+        if (pv_new == 0ULL || (pu == ppu && pv_new == ppv_new && pw == ppw)) {
+            del(p,  pu);
+            del(idx_next[p],  pv_new);
+            del(idx_prev[p],  pw);
+            data[p] = 0ULL;
+            data[idx_prev[p]] = 0ULL;
+
+            del(pp, ppu);
+            del(idx_next[pp], ppv_new);
+            del(idx_prev[pp], ppw);
+            data[pp] = 0ULL;
+            data[idx_prev[pp]] = 0ULL;
+
+            if (pv_new != 0ULL) {
+                data[idx_next[p]]  = 0ULL;
+                data[idx_next[pp]] = 0ULL;
+            }
+            rank -= 6;
+        }
+
+        if (qw_new == 0ULL || (qu == qqu && qv == qqv && qw_new == qqw_new)) {
+            del(q,  qu);
+            del(idx_next[q],  qv);
+            del(idx_prev[q],  qw_new);
+            data[q] = 0ULL;
+            data[idx_next[q]] = 0ULL;
+
+            del(qq, qqu);
+            del(idx_next[qq], qqv);
+            del(idx_prev[qq], qqw_new);
+            data[qq] = 0ULL;
+            data[idx_next[qq]] = 0ULL;
+
+            if (qw_new != 0ULL) {
+                data[idx_prev[q]]  = 0ULL;
+                data[idx_prev[qq]] = 0ULL;
+            }
+            rank -= 6;
+        }
+
+        return true;
+    }
+}
+
+bool Scheme::plus3() {
+    // Find first free row r
+    int r = -1;
+    for (int i = 0; i < n; ++i) { if (data[i] == 0ULL) { r = i; break; } }
+    if (r < 0) return false;
+
+    int p, q;
+    U64 pu, pv, pw, qu, qv, qw;
+    U64 pu_new, pv_new, pw_new, qu_new, qv_new, qw_new, ru_new, rv_new, rw_new;
+
+    while (true) {
+        p = static_cast<int>(rng() % n);
+        q = static_cast<int>(rng() % n);
+
+        pu = data[p];  pv = data[idx_next[p]];  pw = data[idx_prev[p]];
+        qu = data[q];  qv = data[idx_next[q]];  qw = data[idx_prev[q]];
+
+        pu_new = pu;
+        pv_new = pv ^ qv;
+        pw_new = pw;
+
+        qu_new = pu;
+        qv_new = qv;
+        qw_new = pw ^ qw;
+
+        ru_new = pu ^ qu;
+        rv_new = qv;
+        rw_new = qw;
+
+        bool ok = true;
+        if (pu == 0ULL || qu == 0ULL) ok = false;
+        if (pu == qu || pv == qv || pw == qw) ok = false;
+        if (!permit[p][q]) ok = false;
+        if (ok) break;
+    }
+
+    del(idx_next[p], pv); add(idx_next[p], pv_new);
+    del(q, qu);          add(q, pu);
+    del(idx_prev[q], qw); add(idx_prev[q], qw_new);
+    add(r, ru_new);
+    add(idx_next[r], rv_new);
+    add(idx_prev[r], rw_new);
+
+    data[p]             = pu_new;
+    data[idx_next[p]]   = pv_new;
+    data[idx_prev[p]]   = pw_new;
+    data[q]             = qu_new;
+    data[idx_next[q]]   = qv_new;
+    data[idx_prev[q]]   = qw_new;
+    data[r]             = ru_new;
+    data[idx_next[r]]   = rv_new;
+    data[idx_prev[r]]   = rw_new;
+
+    rank += 3;
+    return true;
+}
+
+bool Scheme::plus6() {
+    // Find first free row r (paired row rr = r + 3 must be valid by invariant)
+    int r = -1;
+    for (int i = 0; i < n; ++i) { if (data[i] == 0ULL) { r = i; break; } }
+    if (r < 0 || r + 3 >= n) return false;
+    int rr = r + 3;
+
+    int p, q, pp, qq;
+    U64 pu, pv, pw, qu, qv, qw;
+    U64 ppu, ppv, ppw, qqu, qqv, qqw;
+    U64 pu_new, pv_new, pw_new, qu_new, qv_new, qw_new, ru_new, rv_new, rw_new;
+    U64 ppu_new, ppv_new, ppw_new, qqu_new, qqv_new, qqw_new, rru_new, rrv_new, rrw_new;
+
+    while (true) {
+        p = static_cast<int>(rng() % n);
+        q = static_cast<int>(rng() % n);
+        pp = (p % 6 < 3) ? p + 3 : p - 3;
+        qq = (q % 6 < 3) ? q + 3 : q - 3;
+
+        pu = data[p];  pv = data[idx_next[p]];  pw = data[idx_prev[p]];
+        qu = data[q];  qv = data[idx_next[q]];  qw = data[idx_prev[q]];
+
+        ppu = data[pp]; ppv = data[idx_next[pp]]; ppw = data[idx_prev[pp]];
+        qqu = data[qq]; qqv = data[idx_next[qq]]; qqw = data[idx_prev[qq]];
+
+        pu_new  = pu;
+        pv_new  = pv ^ qv;
+        pw_new  = pw;
+
+        qu_new  = pu;
+        qv_new  = qv;
+        qw_new  = pw ^ qw;
+
+        ru_new  = pu ^ qu;
+        rv_new  = qv;
+        rw_new  = qw;
+
+        ppu_new  = ppu;
+        ppv_new  = ppv ^ qqv;
+        ppw_new  = ppw;
+
+        qqu_new  = ppu;
+        qqv_new  = qqv;
+        qqw_new  = ppw ^ qqw;
+
+        rru_new  = ppu ^ qqu;
+        rrv_new  = qqv;
+        rrw_new  = qqw;
+
+        bool ok = true;
+        if (pu == 0ULL || qu == 0ULL) ok = false;
+        if (ppu == 0ULL || qqu == 0ULL) ok = false;
+        if (pu == qu || pv == qv || pw == qw) ok = false;
+        if (ppu == qqu || ppv == qqv || ppw == qqw) ok = false;
+        if (!permit[p][q]) ok = false;
+        if (ok) break;
+    }
+
+    // First triple block
+    del(idx_next[p], pv);  add(idx_next[p], pv_new);
+    del(q, qu);            add(q, pu);
+    del(idx_prev[q], qw);  add(idx_prev[q], qw_new);
+    add(r, ru_new);
+    add(idx_next[r], rv_new);
+    add(idx_prev[r], rw_new);
+
+    // Second triple block
+    del(idx_next[pp], ppv); add(idx_next[pp], ppv_new);
+    del(qq, qqu);           add(qq, ppu);
+    del(idx_prev[qq], qqw); add(idx_prev[qq], qqw_new);
+    add(rr, rru_new);
+    add(idx_next[rr], rrv_new);
+    add(idx_prev[rr], rrw_new);
+
+    // Write data back
+    data[p]             = pu_new;
+    data[idx_next[p]]   = pv_new;
+    data[idx_prev[p]]   = pw_new;
+    data[q]             = qu_new;
+    data[idx_next[q]]   = qv_new;
+    data[idx_prev[q]]   = qw_new;
+    data[r]             = ru_new;
+    data[idx_next[r]]   = rv_new;
+    data[idx_prev[r]]   = rw_new;
+
+    data[pp]            = ppu_new;
+    data[idx_next[pp]]  = ppv_new;
+    data[idx_prev[pp]]  = ppw_new;
+    data[qq]            = qqu_new;
+    data[idx_next[qq]]  = qqv_new;
+    data[idx_prev[qq]]  = qqw_new;
+    data[rr]            = rru_new;
+    data[idx_next[rr]]  = rrv_new;
+    data[idx_prev[rr]]  = rrw_new;
+
+    rank += 6;
     return true;
 }
