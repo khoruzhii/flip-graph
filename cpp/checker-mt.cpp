@@ -14,6 +14,7 @@
 #include <map>
 #include <iomanip>
 #include <filesystem>
+#include <algorithm>
 
 using U64 = std::uint64_t;
 
@@ -43,6 +44,7 @@ int main(int argc, char* argv[]) {
     int flip_lim = 100000000;  // total flip limit per attempt
     int plus_lim = 50000;      // flips without improvement before plus()
     int threads  = 1;          // number of worker threads
+    int verbose  = 1;          // 0 = do not print per-seed results, 1 = print
 
     // Seeds: either explicit list or generated [seed_start, seed_start + n)
     std::vector<int> seed_list;
@@ -57,6 +59,8 @@ int main(int argc, char* argv[]) {
     app.add_option("-f,--flip-lim", flip_lim, "Total flip limit per attempt")->default_val(100000000);
     app.add_option("-p,--plus-lim", plus_lim, "Flips without improvement before plus transition")->default_val(50000);
     app.add_option("-t,--threads", threads, "Number of worker threads")->default_val(1)->check(CLI::PositiveNumber);
+    app.add_option("-v,--verbose", verbose, "Verbosity: 0=silent runs, 1=print completed seeds")
+       ->default_val(1)->check(CLI::Range(0, 1));
 
     auto* seed_opt = app.add_option("-s,--seeds", seed_list, "Explicit list of seeds to run");
     auto* runs_opt = app.add_option("-n,--num-runs", num_runs, "Number of runs (generated from seed-start)")
@@ -109,7 +113,7 @@ int main(int argc, char* argv[]) {
     std::vector<int> start_ranks(total_tasks, -1);
     std::vector<double> run_secs(total_tasks, 0.0);
 
-    std::cout << "=== 5x5 Flip Graph RW Stats (C3) ===\n";
+    std::cout << "=== 5x5 Flip Graph RW Stats (C3, MT) ===\n";
     std::cout << "Scheme: " << npy_path << "\n";
     std::cout << "Flip limit: " << flip_lim << ", Plus limit: " << plus_lim
               << ", Threads: " << worker_count << "\n";
@@ -166,16 +170,17 @@ int main(int argc, char* argv[]) {
             run_secs[idx]    = secs;
             total_flips.fetch_add(local_flips, std::memory_order_relaxed);
 
-            // Single per-run line (no verbose progress)
-            std::ostringstream oss;
-            oss.setf(std::ios::fixed);
-            oss << "seed=" << seed
-                << ", start_rank=" << start_rank
-                << ", best_rank=" << best_rank
-                << ", time=" << std::setprecision(3) << secs << "s\n";
-
-            std::lock_guard<std::mutex> lk(cout_mtx);
-            std::cout << oss.str();
+            // Conditional per-run line based on verbosity
+            if (verbose) {
+                std::ostringstream oss;
+                oss.setf(std::ios::fixed);
+                oss << "seed=" << seed
+                    << ", start_rank=" << start_rank
+                    << ", best_rank=" << best_rank
+                    << ", time=" << std::setprecision(3) << secs << "s\n";
+                std::lock_guard<std::mutex> lk(cout_mtx);
+                std::cout << oss.str();
+            }
         }
     };
 
