@@ -44,7 +44,7 @@ int main(int argc, char* argv[]) {
     int flip_lim = 100000000;  // total flip limit per attempt
     int plus_lim = 50000;      // flips without improvement before plus()
     int threads  = 1;          // number of worker threads
-    int verbose  = 1;          // 0 = do not print per-seed results, 1 = print
+    int verbose  = 1;          // 0=print only mean delta number, 1=summary, 2=per-run + summary
 
     // Seeds: either explicit list or generated [seed_start, seed_start + n)
     std::vector<int> seed_list;
@@ -59,8 +59,9 @@ int main(int argc, char* argv[]) {
     app.add_option("-f,--flip-lim", flip_lim, "Total flip limit per attempt")->default_val(100000000);
     app.add_option("-p,--plus-lim", plus_lim, "Flips without improvement before plus transition")->default_val(50000);
     app.add_option("-t,--threads", threads, "Number of worker threads")->default_val(1)->check(CLI::PositiveNumber);
-    app.add_option("-v,--verbose", verbose, "Verbosity: 0=silent runs, 1=print completed seeds")
-       ->default_val(1)->check(CLI::Range(0, 1));
+    app.add_option("-v,--verbose", verbose,
+                   "Verbosity: 0=mean delta only, 1=summary, 2=per-run + summary")
+       ->default_val(1)->check(CLI::Range(0, 2));
 
     auto* seed_opt = app.add_option("-s,--seeds", seed_list, "Explicit list of seeds to run");
     auto* runs_opt = app.add_option("-n,--num-runs", num_runs, "Number of runs (generated from seed-start)")
@@ -85,7 +86,12 @@ int main(int argc, char* argv[]) {
         }
     }
     if (seeds_to_run.empty()) {
-        std::cout << "No seeds to run.\n";
+        // In verbose==0, print only the number (0.000) and exit; otherwise print a message.
+        if (verbose == 0) {
+            std::cout << std::fixed << std::setprecision(3) << 0.0 << "\n";
+        } else {
+            std::cout << "No seeds to run.\n";
+        }
         return 0;
     }
 
@@ -113,11 +119,13 @@ int main(int argc, char* argv[]) {
     std::vector<int> start_ranks(total_tasks, -1);
     std::vector<double> run_secs(total_tasks, 0.0);
 
-    std::cout << "=== 5x5 Flip Graph RW Stats (C3, MT) ===\n";
-    std::cout << "Scheme: " << npy_path << "\n";
-    std::cout << "Flip limit: " << flip_lim << ", Plus limit: " << plus_lim
-              << ", Threads: " << worker_count << "\n";
-    std::cout << "Total runs: " << total_tasks << "\n\n";
+    if (verbose >= 1) {
+        std::cout << "=== 5x5 Flip Graph RW Stats (C3, MT) ===\n";
+        std::cout << "Scheme: " << npy_path << "\n";
+        std::cout << "Flip limit: " << flip_lim << ", Plus limit: " << plus_lim
+                  << ", Threads: " << worker_count << "\n";
+        std::cout << "Total runs: " << total_tasks << "\n\n";
+    }
 
     const auto t_all_start = std::chrono::steady_clock::now();
 
@@ -170,8 +178,8 @@ int main(int argc, char* argv[]) {
             run_secs[idx]    = secs;
             total_flips.fetch_add(local_flips, std::memory_order_relaxed);
 
-            // Conditional per-run line based on verbosity
-            if (verbose) {
+            // Per-run line only when verbose==2
+            if (verbose >= 2) {
                 std::ostringstream oss;
                 oss.setf(std::ios::fixed);
                 oss << "seed=" << seed
@@ -213,15 +221,22 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Print summary
+    long double mean_best  = (valid ? sum_best / static_cast<long double>(valid) : 0.0L);
+    long double mean_delta = (valid ? sum_delta / static_cast<long double>(valid) : 0.0L);
+
+    // Verbose==0: print only the mean delta number and exit
+    if (verbose == 0) {
+        std::cout << std::fixed << std::setprecision(3)
+                  << static_cast<double>(mean_delta) << "\n";
+        return 0;
+    }
+
+    // Summary (verbose >= 1)
     std::cout << "\n=== Summary of " << valid << " runs ===\n";
     std::cout << "Histogram of best reached ranks:\n";
     for (const auto& [r, cnt] : hist_best) {
         std::cout << "  rank " << std::setw(3) << r << " : " << cnt << "\n";
     }
-
-    long double mean_best  = (valid ? sum_best / static_cast<long double>(valid) : 0.0L);
-    long double mean_delta = (valid ? sum_delta / static_cast<long double>(valid) : 0.0L);
 
     std::cout << std::fixed << std::setprecision(3);
     std::cout << "Mean best rank : " << static_cast<double>(mean_best)  << "\n";
