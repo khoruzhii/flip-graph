@@ -19,13 +19,13 @@
 using U64 = std::uint64_t;
 
 int main(int argc, char* argv[]) {
-    CLI::App app{"5x5 Flip Graph Sampler (C3 symmetry, multithreaded, single .npy output)"};
+    CLI::App app{"5x5 Flip Graph Sampler (C3 symmetry, multithreaded, 2D .npy output)"};
 
     // Core parameters
     int flip_lim = 100000000;          // max flips per attempt
-    int plus_lim = 100000;              // flips without improvement before plus()
+    int plus_lim = 50000;              // flips without improvement before plus()
     int threads  = 1;                  // worker threads
-    int verbose  = 0;                  // 0=silent, 1=progress
+    int verbose  = 1;                  // 0=silent, 1=progress
 
     // Sampling targets
     int target_rank  = -1;             // required: rank to hit
@@ -36,14 +36,14 @@ int main(int argc, char* argv[]) {
     std::vector<int> seed_list;        // explicit list of seeds
     int seed_start = 100000;           // starting seed when generating attempts
 
-    // Output path is fixed as requested
+    // Output directory (fixed)
     const std::string out_dir = "../data/schemes/555";
 
     // CLI options
     app.add_option("-f,--flip-lim", flip_lim, "Total flip limit per attempt")->default_val(100000000);
-    app.add_option("-p,--plus-lim", plus_lim, "Flips without improvement before plus transition")->default_val(100000);
+    app.add_option("-p,--plus-lim", plus_lim, "Flips without improvement before plus transition")->default_val(50000);
     app.add_option("-t,--threads", threads, "Number of worker threads")->default_val(1)->check(CLI::PositiveNumber);
-    app.add_option("-v,--verbose", verbose, "Verbosity: 0=silent, 1=progress")->default_val(0)->check(CLI::Range(0, 1));
+    app.add_option("-v,--verbose", verbose, "Verbosity: 0=silent, 1=progress")->default_val(1)->check(CLI::Range(0, 1));
 
     app.add_option("-r,--target-rank", target_rank, "Target rank to sample (required)")->required();
     app.add_option("-n,--attempts", attempts, "Maximum number of attempts (seeds)")->default_val(1)->check(CLI::PositiveNumber);
@@ -89,10 +89,10 @@ int main(int argc, char* argv[]) {
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
     };
 
-    // Prepare flat buffer for collected samples (1D). It will be trimmed before saving.
+    // Prepare flat buffer for collected samples (1D backing storage).
+    // It will be saved as a 2D array with shape [actual, data_size].
     const size_t data_size = initial.size();
-    std::vector<U64> flat_data;
-    flat_data.resize(static_cast<size_t>(samples_need) * data_size, 0);
+    std::vector<U64> flat_data(static_cast<size_t>(samples_need) * data_size, 0);
 
     std::cout << "=== 5x5 Flip Graph Sampler (C3, multithreaded) ===\n";
     std::cout << "Target rank: " << target_rank
@@ -177,7 +177,7 @@ int main(int argc, char* argv[]) {
                 // Reserve a slot for this sample
                 int slot = samples_collected.fetch_add(1, std::memory_order_acq_rel);
                 if (slot < samples_need) {
-                    // Copy current data into flat buffer at position [slot]
+                    // Copy current data into flat buffer at position [slot, :]
                     const auto& cur = scheme.get_data();
                     std::copy(cur.begin(), cur.end(), flat_data.begin() + static_cast<size_t>(slot) * data_size);
 
@@ -187,12 +187,11 @@ int main(int argc, char* argv[]) {
                                   << " hit target, slot=" << slot
                                   << ", time=" << std::fixed << std::setprecision(3) << secs << "s\n";
                     }
-                    // If we have just filled the last required slot, signal early stop
+                    // If last required slot is filled, signal early stop
                     if (slot + 1 >= samples_need) {
                         done.store(true, std::memory_order_relaxed);
                     }
                 } else {
-                    // We exceeded requested samples; ignore this sample
                     if (verbose) {
                         std::lock_guard<std::mutex> lk(cout_mtx);
                         std::cout << "seed=" << seed
@@ -224,32 +223,31 @@ int main(int argc, char* argv[]) {
     // Determine actual number of collected samples (clamped)
     int actual = std::min(samples_collected.load(std::memory_order_acquire), samples_need);
 
-    // Trim flat_data to actual count
+    // Resize backing storage to exactly actual rows
     flat_data.resize(static_cast<size_t>(actual) * data_size);
 
-    // Save if anything collected
+    // Save as 2D array if anything collected
     if (actual > 0) {
-        // Build filename {rank:03d}-{samples_colected:06d}.npy in ../data/schemes/555
+        // Filename: {target_rank:03d}-{samples_colected:06d}.npy in ../data/schemes/555
         std::ostringstream oss;
         oss << out_dir << "/";
         oss << std::setfill('0') << std::setw(3) << target_rank;
         oss << "-";
-        oss << std::setfill('0') << std::setw(6) << actual; // "samples_colected" count
+        oss << std::setfill('0') << std::setw(6) << actual; // samples_colected count
         oss << ".npy";
         const std::string filename = oss.str();
 
-        // Save as 1D array
-        std::vector<size_t> shape = { flat_data.size() };
+        // 2D shape: [actual, data_size] (row-major)
+        std::vector<size_t> shape = { static_cast<size_t>(actual), data_size };
         cnpy::npy_save(filename, flat_data.data(), shape);
 
         std::cout << "\nSaved: " << filename
-                  << "  (samples=" << actual
-                  << ", vector_len=" << flat_data.size() << ")\n";
+                  << "  (shape=[" << actual << ", " << data_size << "])\n";
     } else {
         std::cout << "\nNo samples of target rank were collected. Nothing saved.\n";
     }
 
-    // Effective flips throughput
+    // Throughput
     double mps = static_cast<double>(total_flips.load()) / all_secs / 1e6;
     std::cout << "All tasks completed in " << std::fixed << std::setprecision(3) << all_secs << "s"
               << ", effective rate=" << std::setprecision(1) << mps << " M/s\n";
