@@ -23,9 +23,9 @@ int main(int argc, char* argv[]) {
 
     // Core parameters
     int flip_lim = 100000000;          // max flips per attempt
-    int plus_lim = 50000;              // flips without improvement before plus()
+    int plus_lim = 100000;              // flips without improvement before plus()
     int threads  = 1;                  // worker threads
-    int verbose  = 1;                  // 0=silent, 1=progress
+    int verbose  = 0;                  // 0=silent, 1=progress
 
     // Sampling targets
     int target_rank  = -1;             // required: rank to hit
@@ -41,9 +41,9 @@ int main(int argc, char* argv[]) {
 
     // CLI options
     app.add_option("-f,--flip-lim", flip_lim, "Total flip limit per attempt")->default_val(100000000);
-    app.add_option("-p,--plus-lim", plus_lim, "Flips without improvement before plus transition")->default_val(50000);
+    app.add_option("-p,--plus-lim", plus_lim, "Flips without improvement before plus transition")->default_val(100000);
     app.add_option("-t,--threads", threads, "Number of worker threads")->default_val(1)->check(CLI::PositiveNumber);
-    app.add_option("-v,--verbose", verbose, "Verbosity: 0=silent, 1=progress")->default_val(1)->check(CLI::Range(0, 1));
+    app.add_option("-v,--verbose", verbose, "Verbosity: 0=silent, 1=progress")->default_val(0)->check(CLI::Range(0, 1));
 
     app.add_option("-r,--target-rank", target_rank, "Target rank to sample (required)")->required();
     app.add_option("-n,--attempts", attempts, "Maximum number of attempts (seeds)")->default_val(1)->check(CLI::PositiveNumber);

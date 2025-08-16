@@ -22,8 +22,8 @@ int main(int argc, char* argv[]) {
     CLI::App app{"5x5 Flip Graph Random Walk Stats over multiple schemes (C3 symmetry, multithreaded by schemes)"};
 
     // Walk protocol parameters
-    int flip_lim = 100000000;  // total flip limit per attempt
-    int plus_lim = 50000;      // flips without improvement before plus()
+    int flip_lim = 10000000;  // total flip limit per attempt
+    int plus_lim = 100000;      // flips without improvement before plus()
     int threads  = 1;          // number of worker threads
     int verbose  = 0;          // 0=summary, 1=per-scheme + summary
 
@@ -37,8 +37,8 @@ int main(int argc, char* argv[]) {
     std::string npy_name; // required
 
     // CLI options
-    app.add_option("-f,--flip-lim", flip_lim, "Total flip limit per attempt")->default_val(100000000);
-    app.add_option("-p,--plus-lim", plus_lim, "Flips without improvement before plus transition")->default_val(50000);
+    app.add_option("-f,--flip-lim", flip_lim, "Total flip limit per attempt")->default_val(10000000);
+    app.add_option("-p,--plus-lim", plus_lim, "Flips without improvement before plus transition")->default_val(100000);
     app.add_option("-t,--threads", threads, "Number of worker threads (parallel by schemes)")
         ->default_val(1)->check(CLI::PositiveNumber);
     app.add_option("-v,--verbose", verbose, "Verbosity: 0=summary, 1=per-scheme + summary")
