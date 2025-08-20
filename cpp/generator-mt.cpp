@@ -5,37 +5,41 @@
 #include <iostream>
 #include <vector>
 #include <map>
-#include <deque>
 #include <random>
 #include <chrono>
 #include <iomanip>
-#include <sstream>
 #include <string>
 #include <cstdint>
 #include <algorithm>
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <filesystem>
 
-using U16 = std::uint16_t;
-using U64  = std::uint64_t;
+using U64 = std::uint64_t;
 
 int main(int argc, char* argv[]) {
     CLI::App app{"5x5 Flip Graph K-step Label Generator (strided, multithreaded)"};
 
     // Core parameters
     int flip_lim = 100000000;    // total flips per run
-    int plus_lim = 50000;        // flips without improvement before plus()
-    int verbose  = 1;            // 0 = silent per-run, 1 = per-run info
-    int k_steps  = 1000;         // label horizon k (steps)
-    int d_steps  = 1000;         // save stride d (steps); must divide k
+    int plus_lim = 100000;       // flips without improvement before plus()
+    int verbose  = 0;            // 0 = silent per-run, 1 = per-run info
+    int k_steps  = 10000000;     // label horizon k (steps)
+    int d_steps  = 10000;        // save stride d (steps); must divide k
     int partition_rank = 3;      // fixed offset used in experiments
-    int threads = 1;             // number of worker threads
 
     // Seeding / runs (mutually exclusive: -s vs -n)
     std::vector<int> seed_list;
     int num_runs = 1;
     int seed_start = 100;
+
+    // Rank filtering and final quota
+    int rank_filter = -1;        // -1 disables filtering; otherwise keep rows with rank_t == rank_filter
+    int max_rows    = -1;        // -1 disables quota; otherwise stop when this many filtered rows collected
+
+    // Threading
+    int threads = 1;             // number of worker threads
 
     // CLI
     app.add_option("-f,--flip-lim", flip_lim, "Total flip limit per run")->default_val(100000000);
@@ -43,10 +47,12 @@ int main(int argc, char* argv[]) {
     app.add_option("-k,--steps", k_steps, "Label horizon k (steps)")->default_val(10000000)->check(CLI::PositiveNumber);
     app.add_option("-d,--stride", d_steps, "Save stride d (steps), must divide k")->default_val(10000)->check(CLI::PositiveNumber);
     app.add_option("-v,--verbose", verbose, "Verbosity: 0=silent, 1=per-run info")->default_val(0)->check(CLI::Range(0, 1));
+    app.add_option("-r,--rank", rank_filter, "Keep only states whose initial absolute rank equals this value (-1 disables filtering)")->default_val(-1);
+    app.add_option("-m,--max", max_rows, "Stop after collecting this many filtered labeled rows (-1 disables)")->default_val(-1);
     app.add_option("-t,--threads", threads, "Number of worker threads")->default_val(1)->check(CLI::PositiveNumber);
 
     auto* seed_opt = app.add_option("-s,--seeds", seed_list, "Explicit list of seeds to run");
-    auto* runs_opt = app.add_option("-n,--num-runs", num_runs, "Number of runs (starting from --seed-start)")->default_val(1)->check(CLI::PositiveNumber);
+    auto* runs_opt = app.add_option("-n,--num-runs", num_runs, "Number of runs (starting from --seed-start)")->default_val(1);
     seed_opt->excludes(runs_opt);
     runs_opt->excludes(seed_opt);
     app.add_option("--seed-start", seed_start, "Starting seed for --num-runs")->default_val(100)->needs(runs_opt);
@@ -59,6 +65,10 @@ int main(int argc, char* argv[]) {
     }
     if (k_steps % d_steps != 0) {
         std::cerr << "k must be divisible by d. Given k=" << k_steps << ", d=" << d_steps << "\n";
+        return 1;
+    }
+    if (threads <= 0) {
+        std::cerr << "threads must be positive.\n";
         return 1;
     }
 
@@ -89,52 +99,67 @@ int main(int argc, char* argv[]) {
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
     };
     const size_t data_size = init_data.size();
+    const size_t row_width = data_size + 2; // [state..., rank_t, rank_t_plus_k]
 
-    // Global aggregates (filled after workers join)
-    std::vector<int>    best_ranks(seeds_to_run.size(), -1);
-    std::vector<double> run_secs(seeds_to_run.size(), 0.0);
-    std::atomic<std::uint64_t> total_states_saved{0};
-    std::atomic<std::uint64_t> total_pairs_labeled{0};
-    std::atomic<unsigned long long> total_flips{0};
+    // Output file (always overwritten at the end)
+    const std::string out_file = "../data/labeled/555/data.npy";
 
-    // RNG for 6-digit file ids (used to reduce name collisions)
-    std::random_device rd;
-    std::mt19937_64 id_rng((static_cast<std::uint64_t>(rd()) << 1) ^ 0x9E3779B97F4A7C15ULL);
-    std::mutex id_mtx; // protects id_rng
+    // Ensure output directory exists
+    {
+        std::error_code ec;
+        std::filesystem::create_directories(std::filesystem::path(out_file).parent_path(), ec);
+        if (ec) {
+            std::cerr << "Failed to create output directory: " << ec.message() << "\n";
+            return 1;
+        }
+    }
 
-    // Output header
+    // Aggregated stats
+    std::atomic<std::uint64_t> total_states_saved{0};   // pre-filter
+    std::atomic<std::uint64_t> total_pairs_labeled{0};  // pre-filter
+
+    std::mutex cout_mtx;
+    std::mutex best_mtx;
+    std::map<int,int> best_rank_counts;                 // per-run best rank histogram
+
+    // Global accumulator for all runs; merged at the end from thread-local buffers
+    std::mutex accum_mtx;
+    std::vector<U64> all_rows; // flat buffer of size (rows_total * row_width)
+    if (max_rows > 0) {
+        all_rows.reserve(static_cast<size_t>(max_rows) * row_width);
+    }
+
+    // Global stop/goal bookkeeping
+    std::atomic<std::uint64_t> kept_total{0};           // rows appended to all_rows
+    std::atomic<bool> stop{false};                      // signal to stop workers when quota reached
+
     if (verbose) {
         std::cout << "=== K-step Label Generator (strided, multithreaded) ===\n";
         std::cout << "k=" << k_steps << ", d=" << d_steps
-                  << ", flip_lim=" << flip_lim << ", plus_lim=" << plus_lim
-                  << ", threads=" << std::max(1, std::min(threads, static_cast<int>(seeds_to_run.size())))
-                  << "\n";
-        std::cout << "Running " << seeds_to_run.size() << " run(s): ";
-        for (size_t i = 0; i < seeds_to_run.size(); ++i) {
-            std::cout << seeds_to_run[i] << (i + 1 < seeds_to_run.size() ? ", " : "");
-        }
-        std::cout << "\n\n";
+                  << ", flip_lim=" << flip_lim << ", plus_lim=" << plus_lim << "\n";
+        std::cout << "rank filter: " << (rank_filter < 0 ? std::string("disabled") : std::to_string(rank_filter)) << "\n";
+        std::cout << "threads: " << threads << ", quota m=" << max_rows << "\n";
+        std::cout << "Output: " << out_file << " (overwrite at end)\n\n";
     }
 
-    // Work distribution
     const size_t total_tasks = seeds_to_run.size();
     const int worker_count = std::max(1, std::min<int>(threads, static_cast<int>(total_tasks)));
     std::atomic<size_t> next_index{0};
-    std::mutex cout_mtx;
 
-    auto t_all_start = std::chrono::high_resolution_clock::now();
+    auto t_all_start = std::chrono::steady_clock::now();
 
     auto worker = [&]() {
         while (true) {
+            if (stop.load(std::memory_order_relaxed)) break;
+
             size_t idx = next_index.fetch_add(1, std::memory_order_relaxed);
             if (idx >= total_tasks) break;
 
             const int seed = seeds_to_run[idx];
 
-            // Per-task timer
-            auto t0 = std::chrono::high_resolution_clock::now();
+            auto t0 = std::chrono::steady_clock::now();
 
-            // Build scheme for this seed
+            // Each task builds its own Scheme
             Scheme scheme(init_data, 3, static_cast<uint32_t>(seed));
 
             int current_rank = partition_rank + scheme.get_rank();
@@ -146,40 +171,34 @@ int main(int argc, char* argv[]) {
             const int K = k_steps;
             const int F = flip_lim;
             const int k_blocks = K / D;
-            const int stride_total = F / D;                 // how many stride boundaries exist up to F
+            const int stride_total = F / D;                 // number of stride boundaries up to F
             const int max_state_rows = std::max(0, stride_total - k_blocks); // do not store the last k steps
 
-            // Flat storage for labeled samples:
-            // Each row is [data..., rank_t, rank_t_plus_k] as uint64
-            const size_t row_width = data_size + 2;
-            std::vector<U64> flat;
-            flat.assign(static_cast<size_t>(max_state_rows) * row_width, 0ULL);
+            // Per-run storage for labeled samples:
+            std::vector<U64> flat(static_cast<size_t>(max_state_rows) * row_width, 0ULL);
 
             auto row_ptr = [&](int row_index) -> U64* {
                 return flat.data() + static_cast<size_t>(row_index) * row_width;
             };
 
             int states_written = 0;  // rows with state + rank_t written
-            int labels_written = 0;  // rows where rank_t_plus_k also written
-            unsigned long long local_flips = 0;
+            int labels_written = 0;  // rows where rank_t_plus_k written
 
             // Steps counter; sampling happens at steps s = D, 2D, 3D, ...
             int s = 0;
 
             for (int i = 0; i < flip_lim; ++i) {
-                // Try a flip, stop if there are no valid flips
+                if (max_rows > 0 && stop.load(std::memory_order_relaxed)) break;
                 if (!scheme.flip()) break;
                 ++s;
-                ++local_flips;
 
-                // Update absolute rank
                 current_rank = partition_rank + scheme.get_rank();
 
                 // On every stride boundary, process save/label logic
                 if (s % D == 0) {
                     const int stride_idx = s / D; // 1-based
 
-                    // Save state at t if not in last k steps window
+                    // Save state if not in the last k steps window
                     if (stride_idx <= stride_total - k_blocks && states_written < max_state_rows) {
                         U64* row = row_ptr(states_written);
                         const auto& cur = scheme.get_data();
@@ -190,7 +209,7 @@ int main(int argc, char* argv[]) {
                         // rank_t
                         row[data_size] = static_cast<U64>(current_rank);
 
-                        // rank_t_plus_k placeholder remains zero
+                        // rank_t_plus_k placeholder already zero
                         ++states_written;
                     }
 
@@ -207,7 +226,7 @@ int main(int argc, char* argv[]) {
                     }
                 }
 
-                // Schedule plus() when stuck
+                // plus() policy when stuck
                 if (current_rank < best_rank) {
                     best_rank = current_rank;
                     flips_since_improvement = 0;
@@ -222,52 +241,76 @@ int main(int argc, char* argv[]) {
                 }
             }
 
-            auto t1 = std::chrono::high_resolution_clock::now();
+            auto t1 = std::chrono::steady_clock::now();
             double runtime_sec = std::chrono::duration<double>(t1 - t0).count();
-            if (runtime_sec <= 0.0) runtime_sec = 1e-9;
 
-            // Keep only fully labeled pairs
+            // Fully labeled pairs
             const int rows_to_save = std::min(states_written, labels_written);
 
-            // Generate random 6-digit id (guarded RNG)
-            int id;
-            {
-                std::lock_guard<std::mutex> lk(id_mtx);
-                std::uniform_int_distribution<int> dist(0, 999999);
-                id = dist(id_rng);
-            }
-            std::ostringstream oss;
-            // Include seed in filename to avoid collisions between threads
-            // oss << "../data/labeled/555/" << seed << "_" << std::setfill('0') << std::setw(6) << id << ".npy";
-            oss << "../data/labeled/555/" << seed << ".npy";
-            const std::string filename = oss.str();
-
-            // Save as 2D array [rows_to_save, data_size + 2] of uint64
-            std::vector<size_t> shape = {static_cast<size_t>(rows_to_save), row_width};
-            if (!flat.empty()) {
-                cnpy::npy_save(filename, flat.data(), shape);
-            } else {
-                cnpy::npy_save(filename, flat.data(), shape);
+            // Build filtered batch for this run into a local vector
+            std::vector<U64> local_rows;
+            std::uint64_t kept_this_run = 0;
+            if (rows_to_save > 0) {
+                local_rows.reserve(static_cast<size_t>(rows_to_save) * row_width);
+                for (int i = 0; i < rows_to_save; ++i) {
+                    U64* row = row_ptr(i);
+                    const U64 rank_t = row[data_size];
+                    if (rank_filter < 0 || static_cast<int>(rank_t) == rank_filter) {
+                        local_rows.insert(local_rows.end(), row, row + row_width);
+                        ++kept_this_run;
+                    }
+                }
             }
 
-            // Aggregates
-            best_ranks[idx] = best_rank;
-            run_secs[idx] = runtime_sec;
+            // Update pre-filter stats
             total_states_saved.fetch_add(static_cast<std::uint64_t>(states_written), std::memory_order_relaxed);
             total_pairs_labeled.fetch_add(static_cast<std::uint64_t>(rows_to_save), std::memory_order_relaxed);
-            total_flips.fetch_add(local_flips, std::memory_order_relaxed);
 
-            // Per-run output
+            // Merge into the global accumulator with quota enforcement
+            std::uint64_t appended_this_run = 0;
+            if (!local_rows.empty()) {
+                std::lock_guard<std::mutex> lk(accum_mtx);
+                if (max_rows > 0) {
+                    std::uint64_t have = kept_total.load(std::memory_order_relaxed);
+                    if (have < static_cast<std::uint64_t>(max_rows)) {
+                        std::uint64_t remaining = static_cast<std::uint64_t>(max_rows) - have;
+                        std::uint64_t rows_local = static_cast<std::uint64_t>(local_rows.size() / row_width);
+                        std::uint64_t to_take = std::min(remaining, rows_local);
+                        if (to_take > 0) {
+                            all_rows.insert(all_rows.end(),
+                                            local_rows.begin(),
+                                            local_rows.begin() + static_cast<std::ptrdiff_t>(to_take * row_width));
+                            kept_total.store(have + to_take, std::memory_order_relaxed);
+                            appended_this_run = to_take;
+                            if (have + to_take >= static_cast<std::uint64_t>(max_rows)) {
+                                stop.store(true, std::memory_order_relaxed);
+                            }
+                        }
+                    }
+                } else {
+                    // No quota: take everything
+                    all_rows.insert(all_rows.end(),
+                                    std::make_move_iterator(local_rows.begin()),
+                                    std::make_move_iterator(local_rows.end()));
+                    appended_this_run = static_cast<std::uint64_t>(local_rows.size() / row_width);
+                    kept_total.fetch_add(appended_this_run, std::memory_order_relaxed);
+                }
+            }
+
+            // Update best rank histogram
+            {
+                std::lock_guard<std::mutex> lk(best_mtx);
+                best_rank_counts[best_rank] += 1;
+            }
+
             if (verbose) {
-                std::ostringstream line;
-                line.setf(std::ios::fixed);
-                line << "seed=" << seed
-                     << ", best_rank=" << best_rank
-                     << ", states_saved=" << states_written
-                     << ", labeled_pairs=" << rows_to_save
-                     << ", time=" << std::setprecision(3) << runtime_sec << "s\n";
                 std::lock_guard<std::mutex> lk(cout_mtx);
-                std::cout << line.str();
+                std::cout << "seed=" << seed
+                          << ": best_rank=" << best_rank
+                          << ", rows_labeled=" << rows_to_save
+                          << ", rows_kept_local=" << kept_this_run
+                          << ", rows_appended=" << appended_this_run
+                          << ", time=" << std::fixed << std::setprecision(3) << runtime_sec << "s\n";
             }
         }
     };
@@ -278,16 +321,27 @@ int main(int argc, char* argv[]) {
     for (int w = 0; w < worker_count; ++w) pool.emplace_back(worker);
     for (auto& th : pool) th.join();
 
-    auto t_all_end = std::chrono::high_resolution_clock::now();
-    double total_runtime_wall = std::chrono::duration<double>(t_all_end - t_all_start).count();
-    if (total_runtime_wall <= 0.0) total_runtime_wall = 1e-9;
+    auto t_all_end = std::chrono::steady_clock::now();
+    double total_runtime_sec = std::chrono::duration<double>(t_all_end - t_all_start).count();
+    if (total_runtime_sec <= 0.0) total_runtime_sec = 1e-9;
 
-    // Build summary maps
-    std::map<int, int> best_rank_counts;
-    for (int r : best_ranks) if (r >= 0) best_rank_counts[r]++;
+    // Determine number of rows to save, enforce the -m quota exactly
+    std::uint64_t total_rows = (row_width == 0) ? 0 : (all_rows.size() / row_width);
+    std::uint64_t to_save = total_rows;
+    if (max_rows > 0 && to_save > static_cast<std::uint64_t>(max_rows)) {
+        to_save = static_cast<std::uint64_t>(max_rows);
+        all_rows.resize(static_cast<size_t>(to_save * row_width));
+    }
+
+    // Save final array
+    std::vector<size_t> final_shape = { static_cast<size_t>(to_save), row_width };
+    cnpy::npy_save(out_file, all_rows.data(), final_shape);
 
     // Final summary
-    std::cout << "\n=== Summary of " << seeds_to_run.size() << " run(s) ===\n";
+    std::cout << "=== Summary ===\n";
+    std::cout << "Runs attempted: " << seeds_to_run.size() << ", threads: " << worker_count << "\n";
+    std::cout << "Rank filter: " << (rank_filter < 0 ? std::string("disabled") : std::to_string(rank_filter))
+              << ", quota m=" << max_rows << "\n";
     std::cout << "Best ranks achieved:\n";
     for (const auto& [r, cnt] : best_rank_counts) {
         std::cout << "  Rank " << r << ": " << cnt << (cnt == 1 ? " run" : " runs") << "\n";
@@ -295,20 +349,12 @@ int main(int argc, char* argv[]) {
     if (!best_rank_counts.empty()) {
         std::cout << "Overall best rank: " << best_rank_counts.begin()->first << "\n";
     }
-
-    double sum_secs = 0.0;
-    for (double s : run_secs) sum_secs += s;
-
-    std::cout << "Total states saved: " << total_states_saved.load() << "\n";
-    std::cout << "Total labeled pairs: " << total_pairs_labeled.load() << "\n";
-    std::cout << "Total flips: " << total_flips.load() << "\n";
-    std::cout << "Total wall time: " << std::fixed << std::setprecision(3) << total_runtime_wall << "s\n";
-    std::cout << "Avg per run (CPU time): " << std::fixed << std::setprecision(3)
-              << (seeds_to_run.empty() ? 0.0 : sum_secs / seeds_to_run.size()) << "s\n";
-
-    // Effective flips throughput based on wall time
-    double mps = static_cast<double>(total_flips.load()) / total_runtime_wall / 1e6;
-    std::cout << "Effective flips rate: " << std::setprecision(1) << mps << " M/s\n";
+    std::cout << "Total states saved (pre-filter): " << total_states_saved.load() << "\n";
+    std::cout << "Total labeled pairs (pre-filter): " << total_pairs_labeled.load() << "\n";
+    std::cout << "Total rows appended (post-filter): " << kept_total.load() << "\n";
+    std::cout << "Wrote " << to_save << " rows to " << out_file
+              << " with width " << row_width << "\n";
+    std::cout << "Wall time: " << std::fixed << std::setprecision(3) << total_runtime_sec << "s\n";
 
     return 0;
 }

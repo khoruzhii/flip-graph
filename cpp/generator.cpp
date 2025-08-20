@@ -5,7 +5,6 @@
 #include <iostream>
 #include <vector>
 #include <map>
-#include <deque>
 #include <random>
 #include <chrono>
 #include <iomanip>
@@ -22,10 +21,10 @@ int main(int argc, char* argv[]) {
 
     // Core parameters
     int flip_lim = 100000000;    // total flips per run
-    int plus_lim = 50000;        // flips without improvement before plus()
+    int plus_lim = 100000;        // flips without improvement before plus()
     int verbose  = 1;            // 0 = silent per-run, 1 = per-run info
-    int k_steps  = 1000;         // label horizon k (steps)
-    int d_steps  = 1000;         // save stride d (steps); must divide k
+    int k_steps  = 1000000;         // label horizon k (steps)
+    int d_steps  = 10000;         // save stride d (steps); must divide k
     int partition_rank = 3;      // fixed offset used in experiments
 
     // Seeding / runs (mutually exclusive: -s vs -n)
@@ -33,12 +32,16 @@ int main(int argc, char* argv[]) {
     int num_runs = 1;
     int seed_start = 100;
 
+    // Rank filtering
+    int rank_filter = -1;        // -1 disables filtering; otherwise keep rows with rank_t == rank_filter
+
     // CLI
     app.add_option("-f,--flip-lim", flip_lim, "Total flip limit per run")->default_val(100000000);
     app.add_option("-p,--plus-lim", plus_lim, "Flips without improvement before plus transition")->default_val(100000);
-    app.add_option("-k,--steps", k_steps, "Label horizon k (steps)")->default_val(10000000)->check(CLI::PositiveNumber);
+    app.add_option("-k,--steps", k_steps, "Label horizon k (steps)")->default_val(1000000)->check(CLI::PositiveNumber);
     app.add_option("-d,--stride", d_steps, "Save stride d (steps), must divide k")->default_val(10000)->check(CLI::PositiveNumber);
     app.add_option("-v,--verbose", verbose, "Verbosity: 0=silent, 1=per-run info")->default_val(0)->check(CLI::Range(0, 1));
+    app.add_option("-r,--rank", rank_filter, "Keep only states whose initial absolute rank equals this value (-1 disables filtering)")->default_val(-1);
 
     auto* seed_opt = app.add_option("-s,--seeds", seed_list, "Explicit list of seeds to run");
     auto* runs_opt = app.add_option("-n,--num-runs", num_runs, "Number of runs (starting from --seed-start)")->default_val(1);
@@ -82,24 +85,27 @@ int main(int argc, char* argv[]) {
 
     // Aggregated stats
     std::map<int, int> best_rank_counts;            // best absolute rank distribution across runs
-    std::uint64_t total_states_saved = 0;           // rows with state+rank_t written
-    std::uint64_t total_pairs_labeled = 0;          // rows where rank_t_plus_k is also written
+    std::uint64_t total_states_saved = 0;           // rows with state+rank_t written (before filtering)
+    std::uint64_t total_pairs_labeled = 0;          // rows where rank_t_plus_k is also written (before filtering)
+    std::uint64_t total_rows_kept = 0;              // rows kept after filtering and added to global buffer
     double total_runtime_sec = 0.0;
+
+    // Global accumulator for all runs; will be saved once at the end
+    const size_t row_width = data_size + 2;         // [state..., rank_t, rank_t_plus_k]
+    std::vector<U64> all_rows;                      // flat buffer of size (rows_total * row_width)
 
     if (verbose) {
         std::cout << "=== K-step Label Generator (strided) ===\n";
         std::cout << "k=" << k_steps << ", d=" << d_steps
                   << ", flip_lim=" << flip_lim << ", plus_lim=" << plus_lim << "\n";
+        std::cout << "rank filter: " << (rank_filter < 0 ? std::string("disabled") : std::to_string(rank_filter)) << "\n";
+        std::cout << "Output: data.npy (overwrite at end)\n";
         std::cout << "Running " << seeds_to_run.size() << " run(s): ";
         for (size_t i = 0; i < seeds_to_run.size(); ++i) {
             std::cout << seeds_to_run[i] << (i + 1 < seeds_to_run.size() ? ", " : "");
         }
         std::cout << "\n\n";
     }
-
-    // RNG for 6-digit file ids
-    std::random_device rd;
-    std::mt19937_64 id_rng((static_cast<std::uint64_t>(rd()) << 1) ^ 0x9E3779B97F4A7C15ULL);
 
     for (size_t run = 0; run < seeds_to_run.size(); ++run) {
         const int seed = seeds_to_run[run];
@@ -118,9 +124,8 @@ int main(int argc, char* argv[]) {
         const int stride_total = F / D;                 // how many stride boundaries exist up to F
         const int max_state_rows = std::max(0, stride_total - k_blocks); // do not store the last k steps
 
-        // Flat storage for labeled samples:
+        // Flat storage for labeled samples of this run:
         // Each row is [data..., rank_t, rank_t_plus_k] as uint64
-        const size_t row_width = data_size + 2;
         std::vector<U64> flat;
         flat.assign(static_cast<size_t>(max_state_rows) * row_width, 0ULL);
 
@@ -196,29 +201,28 @@ int main(int argc, char* argv[]) {
         const double runtime_sec = std::chrono::duration<double>(t1 - t0).count();
         total_runtime_sec += runtime_sec;
 
-        // We keep only fully labeled pairs in the saved tensor
+        // Keep only fully labeled pairs in this run
         const int rows_to_save = std::min(states_written, labels_written);
 
-        // Create random 6-digit id
-        std::uniform_int_distribution<int> dist(0, 999999);
-        const int id = dist(id_rng);
-        std::ostringstream oss;
-        oss << "../data/labeled/555/" << std::setfill('0') << std::setw(6) << id << ".npy";
-        const std::string filename = oss.str();
-
-        // Save as 2D array [rows_to_save, data_size + 2] of uint64
-        std::vector<size_t> shape = {static_cast<size_t>(rows_to_save), row_width};
-        if (!flat.empty()) {
-            cnpy::npy_save(filename, flat.data(), shape);
-        } else {
-            // Write an empty array with the correct second dimension
-            cnpy::npy_save(filename, flat.data(), shape);
+        // Build filtered batch for this run and append to global accumulator
+        std::uint64_t kept_this_run = 0;
+        if (rows_to_save > 0) {
+            for (int i = 0; i < rows_to_save; ++i) {
+                U64* row = row_ptr(i);
+                const U64 rank_t = row[data_size]; // initial absolute rank for this row
+                if (rank_filter < 0 || static_cast<int>(rank_t) == rank_filter) {
+                    all_rows.insert(all_rows.end(), row, row + row_width);
+                    ++kept_this_run;
+                }
+            }
         }
+        total_rows_kept += kept_this_run;
 
         if (verbose) {
-            // Print one compact line per run: "{run:4d}: best_rank=..., time=...s"
             std::cout << std::setw(4) << (run + 1)
                       << ": best_rank=" << best_rank
+                      << ", rows_labeled=" << rows_to_save
+                      << ", rows_kept=" << kept_this_run
                       << ", time=" << std::fixed << std::setprecision(1) << runtime_sec << "s\n";
         }
 
@@ -227,6 +231,12 @@ int main(int argc, char* argv[]) {
         total_states_saved += static_cast<std::uint64_t>(states_written);
         total_pairs_labeled += static_cast<std::uint64_t>(rows_to_save);
     }
+
+    // Final save: overwrite data.npy with all collected rows
+    const std::string out_file = "../data/labeled/555/data.npy";
+    const size_t total_rows = (row_width == 0) ? 0 : (all_rows.size() / row_width);
+    std::vector<size_t> final_shape = {total_rows, row_width};
+    cnpy::npy_save(out_file, all_rows.data(), final_shape);
 
     // Final summary
     std::cout << "=== Summary of " << seeds_to_run.size() << " run(s) ===\n";
@@ -237,8 +247,10 @@ int main(int argc, char* argv[]) {
     if (!best_rank_counts.empty()) {
         std::cout << "Overall best rank: " << best_rank_counts.begin()->first << "\n";
     }
-    std::cout << "Total states saved: " << total_states_saved << "\n";
-    std::cout << "Total labeled pairs: " << total_pairs_labeled << "\n";
+    std::cout << "Total states saved (pre-filter): " << total_states_saved << "\n";
+    std::cout << "Total labeled pairs (pre-filter): " << total_pairs_labeled << "\n";
+    std::cout << "Total rows kept (post-filter): " << total_rows_kept << "\n";
+    std::cout << "Wrote " << total_rows << " rows to " << out_file << " with width " << row_width << "\n";
     std::cout << "Total time: " << std::fixed << std::setprecision(1) << total_runtime_sec
               << "s, avg per run: "
               << (seeds_to_run.empty() ? 0.0 : total_runtime_sec / seeds_to_run.size()) << "s\n";
