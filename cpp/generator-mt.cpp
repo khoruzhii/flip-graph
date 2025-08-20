@@ -14,7 +14,6 @@
 #include <thread>
 #include <atomic>
 #include <mutex>
-#include <filesystem>
 
 using U64 = std::uint64_t;
 
@@ -102,17 +101,7 @@ int main(int argc, char* argv[]) {
     const size_t row_width = data_size + 2; // [state..., rank_t, rank_t_plus_k]
 
     // Output file (always overwritten at the end)
-    const std::string out_file = "../data/labeled/555/data.npy";
-
-    // Ensure output directory exists
-    {
-        std::error_code ec;
-        std::filesystem::create_directories(std::filesystem::path(out_file).parent_path(), ec);
-        if (ec) {
-            std::cerr << "Failed to create output directory: " << ec.message() << "\n";
-            return 1;
-        }
-    }
+    const std::string out_file = "data.npy";
 
     // Aggregated stats
     std::atomic<std::uint64_t> total_states_saved{0};   // pre-filter
