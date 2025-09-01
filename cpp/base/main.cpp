@@ -19,23 +19,25 @@ void print_data(int n, const std::vector<U64>& data) {
 }
 
 int get_rank(const std::vector<U64>& data) {
-	int r0 = data.size()/3;
+	int n_term = data.size()/3;
 	int rank = 0;
-	for (int i = 0; i < r0; ++i)
-		if (data[i] != 0)
+	for (int i = 0; i < n_term; ++i)
+		if (data[3*i] != 0)
 			rank++;
 	return rank;
 }
 
 int main() {
 
-	int n = 4;
-	int N = 1e7;
+	int n = 5;
+	int N = 1e8;
 	auto data = generate_trivial_decomposition(n);
-	int r0 = data.size()/3;
 
-	Scheme scheme(data, std::random_device{}());
-	std::cout << "initial rank = " << get_rank(scheme.get_data()) << "\n";
+	for (int j = 0; j < 100; ++j) {
+	
+	U32 seed = std::random_device{}();
+	Scheme scheme(data, seed);
+	// std::cout << "initial rank = " << get_rank(scheme.get_data()) << "\n";
 
 	using clock = std::chrono::steady_clock;
 	auto t0 = clock::now();
@@ -48,12 +50,16 @@ int main() {
 	auto t1 = clock::now();
 	auto time = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
 
-	std::cout << "final rank = " << get_rank(scheme.get_data()) << "\n";
-	std::cout << "# flips: " << 1e3 / time * N / 1e6 << " M/s" << "\n";
-
 	// print_data(n, scheme.get_data());
 
-	std::cout << (verify_scheme(scheme.get_data(), n) ? "Scheme is correct." : "Scheme is incorrect.") << "\n";
+	auto correct = verify_scheme(scheme.get_data(), n);
+	std::cout << "final rank = " << get_rank(scheme.get_data()) 
+	          << ", seed = " << seed 
+	          << ", correct = " << correct
+	          << ", speed = " << 1e3 / time * N / 1e6 << " M/s" 
+	          << "\n";
+
+	}
 
 	std::cout << "Finished." << "\n";
 	return 0;

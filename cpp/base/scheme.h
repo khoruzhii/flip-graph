@@ -1,3 +1,4 @@
+// scheme.h
 #pragma once
 
 #include <vector>
@@ -5,9 +6,50 @@
 #include <array>
 #include <random>
 #include <cstdint>
-#include "indexed_set.h"
 
 using U64 = std::uint64_t;
+using U32 = std::uint32_t;
+
+
+template <typename T>
+class indexed_set {
+    std::vector<T> items_;
+    ankerl::unordered_dense::map<T, int> pos_;
+
+public:
+    // Returns false if x already exists; O(1)
+    bool insert(const T& x) {
+        if (auto [it, ok] = pos_.try_emplace(x, items_.size()); ok) {
+            items_.push_back(x);
+            return true;
+        }
+        return false;
+    }
+
+    // Erase by value; O(1) via swap-and-pop
+    bool erase(const T& x) {
+        auto it = pos_.find(x);
+        if (it == pos_.end()) return false;
+        
+        int i = it->second;
+        if (i != items_.size() - 1) {
+            pos_[items_[i] = std::move(items_.back())] = i;
+        }
+        items_.pop_back();
+        pos_.erase(it);
+        return true;
+    }
+
+    // O(1) queries
+    int size() const noexcept { return items_.size(); }
+    bool empty() const noexcept { return items_.empty(); }
+    bool contains(const T& x) const { return pos_.count(x); }
+    
+    // O(1) access
+    T& operator[](int i) { return items_[i]; }
+    const T& operator[](int i) const { return items_[i]; }
+};
+
 
 class Scheme {
 private:
@@ -15,6 +57,7 @@ private:
     std::array<indexed_set<U64>, 3> vecs;
     std::array<ankerl::unordered_dense::map<U64, indexed_set<int>>, 3> maps;
     std::mt19937 rng;
+    int reduce_cnt;
     int type, j1, j2;
     
     void add(int term_idx, int comp, U64 val) {
@@ -63,6 +106,7 @@ public:
     explicit Scheme(std::vector<U64> data_in, U64 seed = 42) 
         : data(std::move(data_in)), rng(seed) {
         
+        reduce_cnt = 0;
         int n_terms = data.size() / 3;
         for (int i = 0; i < n_terms; ++i) {
             if (data[i*3] == 0) continue;  // Skip zero terms
@@ -138,10 +182,59 @@ public:
         U64 p1 = data[3*j1 + tp];
         U64 p2 = data[3*j2 + tp];
         
-        // Perform flip
+        // Flip
         set(j1, tn, n1 ^ n2);
         set(j2, tp, p1 ^ p2);
+
+        // Reduction
+        reduce(j1, tn);
+        reduce(j2, tp);
+
         return true;
+    }
+
+    // Try to reduce term at term_idx after component comp was modified
+    bool reduce(int term_idx, int comp) {
+        // Skip if term is already zero
+        if (data[term_idx*3] == 0) return false;
+        
+        U64 u = data[term_idx*3];
+        U64 v = data[term_idx*3 + 1];
+        U64 w = data[term_idx*3 + 2];
+        
+        int n_terms = data.size() / 3;
+        
+        // Check against all other non-zero terms
+        for (int i = 0; i < n_terms; ++i) {
+            if (i == term_idx || data[i*3] == 0) continue;
+            
+            U64 u2 = data[i*3];
+            U64 v2 = data[i*3 + 1];
+            U64 w2 = data[i*3 + 2];
+            
+            // Count matching components
+            int matches = (u == u2) + (v == v2) + (w == w2);
+            
+            // Need at least 2 matches for reduction
+            if (matches < 2) continue;
+            
+            // Find which component differs (or any if all match)
+            if (u != u2) {
+                set(i, 0, u ^ u2);  // XOR differing component
+            } else if (v != v2) {
+                set(i, 1, v ^ v2);
+            } else {
+                set(i, 2, w ^ w2);
+            }
+            
+            // Zero out term_idx
+            set(term_idx, 0, 0);
+            reduce_cnt++;
+            
+            return true;
+        }
+        
+        return false;
     }
     
     // Get data reference
