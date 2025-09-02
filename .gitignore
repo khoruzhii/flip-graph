@@ -4,3 +4,4 @@ flipgraph/__pycache__/
 notebooks/__pycache__/
 notebooks/.ipynb_checkpoints/
 coin/__pycache__/
+*.exe
