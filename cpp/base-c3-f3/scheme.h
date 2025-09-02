@@ -304,27 +304,29 @@ inline bool Scheme::flip() {
         
         if (!permit[p][q]) continue;
         
-        // Get term indices from component indices
-        int term_p = p / 3;
-        int term_q = q / 3;
-        int comp = p % 3;  // Component that has duplicate value
-        
-        // Components to update (next and prev in cyclic order)
-        int comp_next = (comp + 1) % 3;
-        int comp_prev = (comp + 2) % 3;
-        
-        B3 pv = data[term_p * 3 + comp_next];
-        B3 pw = data[term_p * 3 + comp_prev];
-        B3 qv = data[term_q * 3 + comp_next];
-        B3 qw = data[term_q * 3 + comp_prev];
+        // Используем idx_next и idx_prev для правильной навигации!
+        B3 pv = data[idx_next[p]];
+        B3 pw = data[idx_prev[p]];
+        B3 qv = data[idx_next[q]];
+        B3 qw = data[idx_prev[q]];
         
         // Mod3 flip operations
         B3 pv_new = pv - qv;  // Mod3 subtraction
         B3 qw_new = pw + qw;  // Mod3 addition
         
+        // Обновляем правильные позиции
+        int pv_idx = idx_next[p];
+        int qw_idx = idx_prev[q];
+        
+        // Получаем номера термов для set функции
+        int term_pv = pv_idx / 3;
+        int comp_pv = pv_idx % 3;
+        int term_qw = qw_idx / 3;
+        int comp_qw = qw_idx % 3;
+        
         // Update using set function
-        set(term_p, comp_next, pv_new);
-        set(term_q, comp_prev, qw_new);
+        set(term_pv, comp_pv, pv_new);
+        set(term_qw, comp_qw, qw_new);
         
         return true;
     }

@@ -89,9 +89,9 @@ inline std::vector<B3> generate_trivial_decomposition_mod3(
     for (const auto& P : parts) {
         for (int ii : P) for (int jj : P) for (int kk : P) {
             if (ii == jj && jj == kk) continue;
-            B3 u = make_b3_element(n, ii, ii, 1); // a_{ii} = 1
-            B3 v = make_b3_element(n, jj, jj, 1); // b_{jj} = 1
-            B3 w = make_b3_element(n, kk, kk, 1); // c_{kk} = 1
+            B3 u = make_b3_element(n, ii, ii, 2); // a_{ii} = 1
+            B3 v = make_b3_element(n, jj, jj, 2); // b_{jj} = 1
+            B3 w = make_b3_element(n, kk, kk, 2); // c_{kk} = 1
             data.push_back(u);
             data.push_back(v);
             data.push_back(w);
@@ -144,23 +144,23 @@ inline std::vector<B3> select_orbit_representatives_mod3(const std::vector<B3>& 
     return reps;
 }
 
-// ----- Verification for C3-symmetric mod3 scheme ------------------------------
+
+// Verification for C3-symmetric mod3 schemes (expects orbit representatives)
 //
 // Cyclic Brent equations with orbit representatives S (one per C3-orbit):
 //
 // For all (i1,i2,j1,j2,k1,k2):
 //   sum_{s in S} [
 //         a(i1,i2) b(j1,j2) c(k1,k2)
-//       + a(j1,j2) b(k1,k2) c(i1,i2)  
+//       + a(j1,j2) b(k1,k2) c(i1,i2)
 //       + a(k1,k2) b(i1,i2) c(j1,j2)
-//   ] ==  M_expected - T_expected (mod 3)
+//   ] == M_expected - T_expected (mod 3)
 //
-// where
-//   M_expected = 1 iff (i2==j1 && j2==k1 && k2==i1), else 0,
-//   T_expected = 1 iff (i1==i2, j1==j2, k1==k2) and those indices lie in the same part.
+// where M_expected = 1 iff (i2==j1 && j2==k1 && k2==i1), else 0
+//       T_expected = 1 iff (i1==i2, j1==j2, k1==k2) and all in same part
 //
 inline bool verify_scheme_mod3(const std::vector<B3>& orbit_reps, int n,
-                                const std::vector<std::vector<int>>& parts) {
+                               const std::vector<std::vector<int>>& parts) {
     const int r = (int)orbit_reps.size() / 3;
     if ((int)orbit_reps.size() != 3 * r) return false;
 
@@ -180,28 +180,26 @@ inline bool verify_scheme_mod3(const std::vector<B3>& orbit_reps, int n,
             const B3& v = orbit_reps[3*l + 1];
             const B3& w = orbit_reps[3*l + 2];
 
-            // Skip if term is zero
-            if (u.is_zero()) continue;
-
-            // First cyclic permutation: (u,v,w)
-            int a1 = get_trit(u, i1 * n + i2);
-            int b1 = get_trit(v, j1 * n + j2);
-            int c1 = get_trit(w, k1 * n + k2);
+            // Extract trit values and compute products mod 3
+            int a_ij = get_trit(u, i1 * n + i2);
+            int b_jk = get_trit(v, j1 * n + j2);
+            int c_ki = get_trit(w, k1 * n + k2);
             
-            // Second cyclic permutation: (v,w,u)
-            int a2 = get_trit(v, i1 * n + i2);
-            int b2 = get_trit(w, j1 * n + j2);
-            int c2 = get_trit(u, k1 * n + k2);
+            int a_jk = get_trit(u, j1 * n + j2);
+            int b_ki = get_trit(v, k1 * n + k2);
+            int c_ij = get_trit(w, i1 * n + i2);
             
-            // Third cyclic permutation: (w,u,v)
-            int a3 = get_trit(w, i1 * n + i2);
-            int b3 = get_trit(u, j1 * n + j2);
-            int c3 = get_trit(v, k1 * n + k2);
+            int a_ki = get_trit(u, k1 * n + k2);
+            int b_ij = get_trit(v, i1 * n + i2);
+            int c_jk = get_trit(w, j1 * n + j2);
 
-            // Sum all three cyclic contributions (mod 3)
-            sum = (sum + a1 * b1 * c1 + a2 * b2 * c2 + a3 * b3 * c3) % 3;
+            // Compute three cyclic terms and add mod 3
+            sum = (sum + a_ij * b_jk * c_ki) % 3;
+            sum = (sum + a_jk * b_ki * c_ij) % 3;
+            sum = (sum + a_ki * b_ij * c_jk) % 3;
         }
 
+        // Compute expected value
         int M_expected = (i2 == j1 && j2 == k1 && k2 == i1) ? 1 : 0;
 
         int T_expected = 0;
@@ -212,53 +210,8 @@ inline bool verify_scheme_mod3(const std::vector<B3>& orbit_reps, int n,
             T_expected = (pi == pj && pj == pk) ? 1 : 0;
         }
 
-        // In mod3: expected = M - T (mod 3)
+        // In mod 3: expected = M - T
         int expected = (M_expected - T_expected + 3) % 3;
-        
-        if (sum != expected) return false;
-    }
-
-    return true;
-}
-
-// Simplified verification without partition (for matrix multiplication only)
-inline bool verify_scheme_mod3_simple(const std::vector<B3>& orbit_reps, int n) {
-    const int r = (int)orbit_reps.size() / 3;
-    if ((int)orbit_reps.size() != 3 * r) return false;
-
-    for (int i1 = 0; i1 < n; ++i1)
-    for (int i2 = 0; i2 < n; ++i2)
-    for (int j1 = 0; j1 < n; ++j1)
-    for (int j2 = 0; j2 < n; ++j2)
-    for (int k1 = 0; k1 < n; ++k1)
-    for (int k2 = 0; k2 < n; ++k2) {
-
-        int sum = 0;
-
-        for (int l = 0; l < r; ++l) {
-            const B3& u = orbit_reps[3*l + 0];
-            const B3& v = orbit_reps[3*l + 1];
-            const B3& w = orbit_reps[3*l + 2];
-
-            if (u.is_zero()) continue;
-
-            // All three cyclic permutations
-            int a1 = get_trit(u, i1 * n + i2);
-            int b1 = get_trit(v, j1 * n + j2);
-            int c1 = get_trit(w, k1 * n + k2);
-            
-            int a2 = get_trit(v, i1 * n + i2);
-            int b2 = get_trit(w, j1 * n + j2);
-            int c2 = get_trit(u, k1 * n + k2);
-            
-            int a3 = get_trit(w, i1 * n + i2);
-            int b3 = get_trit(u, j1 * n + j2);
-            int c3 = get_trit(v, k1 * n + k2);
-
-            sum = (sum + a1 * b1 * c1 + a2 * b2 * c2 + a3 * b3 * c3) % 3;
-        }
-
-        int expected = (i2 == j1 && j2 == k1 && k2 == i1) ? 1 : 0;
         
         if (sum != expected) return false;
     }

@@ -50,7 +50,7 @@ int main() {
     int n = 5;
 
     // Number of flips
-    int N = 1e9;
+    int N = 1e7;
 
     // Diagonal partition for C3 symmetry
     std::vector<std::vector<int>> parts = {{0, 4}, {1, 3}, {2}};  // For n=5
@@ -60,6 +60,8 @@ int main() {
     // Build the trivial symmetric decomposition S for M_n - T(parts) in mod3
     auto data_full = generate_trivial_decomposition_mod3(n, parts);
     auto data = select_orbit_representatives_mod3(data_full);
+
+    // print_data(n, data);
 
     std::cout << "initial rank = " << get_rank(data, parts)
               << ", correct = " << verify_scheme_mod3(data, n, parts)
