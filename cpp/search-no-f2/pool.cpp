@@ -223,12 +223,12 @@ public:
                 // Notify workers that there's work
                 pool_cv.notify_all();
                 
-                // Periodic status update
-                if (attempts_made > 0 && attempts_made % 1000 == 0) {
-                    std::cout << "  Attempts: " << attempts_made 
-                              << ", Found: " << next_pool.size() 
-                              << "/" << pool_size << "\n";
-                }
+                // // Periodic status update
+                // if (attempts_made > 0 && attempts_made % 1000 == 0) {
+                //     std::cout << "  Attempts: " << attempts_made 
+                //               << ", Found: " << next_pool.size() 
+                //               << "/" << pool_size << "\n";
+                // }
             }
             
             // Stop workers
@@ -277,22 +277,22 @@ public:
             std::cout << "Best rank achieved: " << current_pool[0].rank << "\n";
             std::cout << "Pool size at best rank: " << current_pool.size() << "\n";
             
-            // Output one example scheme
-            std::cout << "\nExample scheme (seed " << current_pool[0].seed << "):\n";
-            const auto& data = current_pool[0].data;
-            int n_terms = data.size() / 3;
-            int printed = 0;
-            for (int i = 0; i < n_terms && printed < 5; ++i) {
-                if (data[i*3] != 0) {
-                    std::cout << "  [" << std::hex << data[i*3] 
-                              << ", " << data[i*3+1] 
-                              << ", " << data[i*3+2] << "]\n";
-                    printed++;
-                }
-            }
-            if (n_terms > 5) {
-                std::cout << "  ... (" << (n_terms - 5) << " more terms)\n";
-            }
+            // // Output one example scheme
+            // std::cout << "\nExample scheme (seed " << current_pool[0].seed << "):\n";
+            // const auto& data = current_pool[0].data;
+            // int n_terms = data.size() / 3;
+            // int printed = 0;
+            // for (int i = 0; i < n_terms && printed < 5; ++i) {
+            //     if (data[i*3] != 0) {
+            //         std::cout << "  [" << std::hex << data[i*3] 
+            //                   << ", " << data[i*3+1] 
+            //                   << ", " << data[i*3+2] << "]\n";
+            //         printed++;
+            //     }
+            // }
+            // if (n_terms > 5) {
+            //     std::cout << "  ... (" << (n_terms - 5) << " more terms)\n";
+            // }
         }
     }
 };
