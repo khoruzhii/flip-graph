@@ -1,6 +1,7 @@
 #include "scheme.h"
 #include "field.h"
 #include "utils.h"
+#include "cnpy.h"
 #include "CLI11.hpp"
 
 #include <iostream>
@@ -16,6 +17,7 @@
 #include <algorithm>
 #include <iomanip>
 #include <optional>
+#include <filesystem>
 
 using FieldType = B3;
 
@@ -42,6 +44,59 @@ size_t hash_scheme(const std::vector<Field>& data) {
     return h;
 }
 
+// Save pool to file using cnpy
+template<typename Field>
+void save_pool(const std::vector<SchemeData<Field>>& pool, int rank, int n) {
+    if (pool.empty()) return;
+    
+    // Create pool directory if it doesn't exist
+    std::filesystem::create_directories("pool");
+    
+    // Prepare data for saving
+    std::vector<U64> save_data;
+    
+    for (const auto& scheme : pool) {
+        // Filter out zero elements (check only first component)
+        std::vector<Field> nonzero_data;
+        for (size_t i = 0; i < scheme.data.size(); i += 3) {
+            if (!scheme.data[i].is_zero()) {
+                nonzero_data.push_back(scheme.data[i]);
+                nonzero_data.push_back(scheme.data[i+1]);
+                nonzero_data.push_back(scheme.data[i+2]);
+            }
+        }
+        
+        // For B3, we need to save both lo and hi parts
+        if constexpr (!field_traits<Field>::is_mod2) {
+            for (const auto& f : nonzero_data) {
+                B3 b3 = static_cast<B3>(f);
+                save_data.push_back(b3.lo);
+                save_data.push_back(b3.hi);
+            }
+        } else {
+            // For B2, just save the value
+            for (const auto& f : nonzero_data) {
+                save_data.push_back(pack_field(f));
+            }
+        }
+    }
+    
+    // Construct filename
+    std::string field_name = field_traits<Field>::is_mod2 ? "mod2" : "mod3";
+    std::string filename = "pool/n" + std::to_string(n) + "_" + field_name + 
+                          "_rank" + std::to_string(rank) + ".npy";
+    
+    // Calculate shape
+    size_t elements_per_scheme = rank * 3;  // 3 components per non-zero summand
+    if constexpr (!field_traits<Field>::is_mod2) {
+        elements_per_scheme *= 2;  // lo and hi for B3
+    }
+    std::vector<size_t> shape = {pool.size(), elements_per_scheme};
+    
+    // Save using cnpy
+    cnpy::npy_save(filename, save_data.data(), shape);
+}
+
 // Pool-based search algorithm
 template<typename Field>
 class PoolSearch {
@@ -54,6 +109,7 @@ private:
     int threads;              // Number of worker threads
     int max_attempts;         // Maximum attempts per rank level
     bool use_plus;            // Whether to use plus transitions
+    bool save_pools;          // Whether to save pools
     
     std::mutex pool_mutex;
     std::mutex result_mutex;
@@ -70,10 +126,10 @@ private:
     
 public:
     PoolSearch(int n_, int path_lim, int pool_sz, int target, 
-               int plus_l, int thr, int max_att, bool use_p)
+               int plus_l, int thr, int max_att, bool use_p, bool save_p)
         : n(n_), path_limit(path_lim), pool_size(pool_sz), 
           target_rank(target), plus_lim(plus_l), 
-          threads(thr), max_attempts(max_att), use_plus(use_p),
+          threads(thr), max_attempts(max_att), use_plus(use_p), save_pools(save_p),
           seed_gen(std::random_device{}()) {}
     
     // Try to find a scheme of rank-1 from the given starting scheme
@@ -200,6 +256,11 @@ public:
         // Initialize with starting scheme
         current_pool.push_back(SchemeData<Field>(initial_data, initial_rank, 0));
         
+        // Save initial pool if enabled
+        if (save_pools) {
+            save_pool(current_pool, initial_rank, n);
+        }
+        
         std::cout << "Starting from rank " << initial_rank << "\n\n";
         
         // Search for progressively lower ranks
@@ -266,6 +327,11 @@ public:
             }
             std::cout << "Verified: " << verified << "/" << next_pool.size() << "\n\n";
             
+            // Save pool if enabled
+            if (save_pools && !next_pool.empty()) {
+                save_pool(next_pool, current_target, n);
+            }
+            
             // Move to next level
             current_pool = std::move(next_pool);
             
@@ -281,13 +347,6 @@ public:
             std::cout << "\n=== Final Results ===\n";
             std::cout << "Best rank achieved: " << current_pool[0].rank << "\n";
             std::cout << "Pool size at best rank: " << current_pool.size() << "\n";
-            
-            // Print example seeds for reproduction
-            // std::cout << "\nExample seeds that achieved rank " << current_pool[0].rank << ":\n";
-            // int examples = std::min(5, (int)current_pool.size());
-            // for (int i = 0; i < examples; ++i) {
-            //     std::cout << "  Seed " << current_pool[i].seed << "\n";
-            // }
         }
     }
 };
@@ -304,6 +363,7 @@ int main(int argc, char* argv[]) {
     int threads = 4;
     int max_attempts = 1000;
     bool use_plus = false;  // Default: plus transitions disabled
+    bool save_pools = false; // Default: saving disabled
     
     app.add_option("-n,--size", n, "Matrix size (nxn)")
         ->default_val(4)->check(CLI::PositiveNumber);
@@ -320,11 +380,12 @@ int main(int argc, char* argv[]) {
     app.add_option("-m,--max-attempts", max_attempts, "Max attempts per rank level")
         ->default_val(1000)->check(CLI::PositiveNumber);
     app.add_flag("--plus", use_plus, "Enable plus transitions");
+    app.add_flag("--save", save_pools, "Save pools to files");
     
     CLI11_PARSE(app, argc, argv);
     
     PoolSearch<FieldType> search(n, path_limit, pool_size, target_rank, 
-                                  plus_lim, threads, max_attempts, use_plus);
+                                  plus_lim, threads, max_attempts, use_plus, save_pools);
     search.run();
     
     return 0;
