@@ -362,7 +362,7 @@ public:
         return true;
     }
     
-    // Perform plus-transition operation (mod2 specific, but can work for mod3 too)
+    // Perform plus-transition operation
     bool plus() {
         int idx1, idx2;
         
@@ -383,9 +383,9 @@ public:
         }
         
         // New values for the three resulting terms
-        Field new_b1 = b1 + b2;
+        Field new_b1 = b1 - b2;
         Field new_a2 = a1;
-        Field new_c2 = c1 + c2;
+        Field new_c2 = c1 - c2;
         Field new_a3 = a1 + a2;
         Field new_b3 = b2;
         Field new_c3 = c2;
