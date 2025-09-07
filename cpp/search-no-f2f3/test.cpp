@@ -4,12 +4,22 @@
 #include <random>
 #include "field.h"
 #include "scheme.h"
-#include "utils.h"
+
+#if   defined(SYM)
+    #include "utils_sym.h"
+#elif defined(ACOM) 
+    #include "utils_acom.h"
+#else
+    #include "utils.h"
+#endif
+
+#ifdef MOD3
+    using FieldType = B3;
+#else
+    using FieldType = B2;
+#endif
 
 using U32 = std::uint32_t;
-
-// Choose field type here: B2 for mod2, B3 for mod3
-using FieldType = B3;
 
 // Simple data printer for debugging
 void print_data(const std::vector<U64>& data) {
@@ -19,7 +29,7 @@ void print_data(const std::vector<U64>& data) {
 }
 
 int main() {
-    int n = 4;
+    int n = 2;
     int N = 1e7;  // Number of flips
     
     // Generate trivial decomposition
@@ -31,7 +41,7 @@ int main() {
     U32 seed = std::random_device{}();
     Scheme<FieldType> scheme(data, seed);
     
-    // std::cout << "Initial rank = " << scheme.get_rank() << "\n";
+    std::cout << "Initial rank = " << scheme.get_rank() << ", correct = " << verify_scheme(scheme.get_data_field(), n) << "\n";
     
     using clock = std::chrono::steady_clock;
     auto t0 = clock::now();

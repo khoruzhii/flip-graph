@@ -1,6 +1,5 @@
 #include "scheme.h"
 #include "field.h"
-#include "utils.h"
 #include "cnpy.h"
 #include "CLI11.hpp"
 
@@ -12,14 +11,22 @@
 #include <random>
 #include <chrono>
 #include <condition_variable>
-#include <queue>
-#include <unordered_set>
 #include <algorithm>
 #include <iomanip>
 #include <optional>
 #include <filesystem>
 
-using FieldType = B3;
+#ifdef SYM
+    #include "utils_sym.h"
+#else
+    #include "utils.h"
+#endif
+
+#ifdef MOD3
+    using FieldType = B3;
+#else
+    using FieldType = B2;
+#endif
 
 // Structure to hold a scheme and its metadata
 template<typename Field>
@@ -32,17 +39,6 @@ struct SchemeData {
     SchemeData(const std::vector<Field>& d, int r, U32 s) 
         : data(d), rank(r), seed(s) {}
 };
-
-// Simple hash for scheme data (for deduplication)
-template<typename Field>
-size_t hash_scheme(const std::vector<Field>& data) {
-    size_t h = 0;
-    for (const auto& f : data) {
-        U64 packed = pack_field(f);
-        h ^= std::hash<U64>{}(packed) + 0x9e3779b9 + (h << 6) + (h >> 2);
-    }
-    return h;
-}
 
 // Save pool to file using cnpy
 template<typename Field>
@@ -120,7 +116,6 @@ private:
     
     std::vector<SchemeData<Field>> current_pool;
     std::vector<SchemeData<Field>> next_pool;
-    std::unordered_set<size_t> seen_hashes;  // For deduplication
     
     std::mt19937 seed_gen;
     
@@ -210,13 +205,7 @@ public:
                 
                 if (result.has_value()) {
                     std::lock_guard<std::mutex> lock(result_mutex);
-                    
-                    // Check for duplicates
-                    size_t h = hash_scheme(result->data);
-                    if (seen_hashes.find(h) == seen_hashes.end()) {
-                        seen_hashes.insert(h);
-                        next_pool.push_back(*result);
-                    }
+                    next_pool.push_back(*result);
                 }
                 
                 delete to_process;
@@ -271,7 +260,6 @@ public:
             std::cout << "=== Searching for rank " << current_target << " ===\n";
             
             next_pool.clear();
-            seen_hashes.clear();
             stop_workers = false;
             attempts_made = 0;
             
