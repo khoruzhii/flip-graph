@@ -20,6 +20,8 @@
     #include "utils_sym.h"
 #elif defined(ACOM) 
     #include "utils_acom.h"
+#elif defined(AAT) 
+    #include "utils_aat.h"
 #else
     #include "utils.h"
 #endif

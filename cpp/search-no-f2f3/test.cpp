@@ -9,6 +9,8 @@
     #include "utils_sym.h"
 #elif defined(ACOM) 
     #include "utils_acom.h"
+#elif defined(AAT) 
+    #include "utils_aat.h"
 #else
     #include "utils.h"
 #endif
@@ -29,7 +31,7 @@ void print_data(const std::vector<U64>& data) {
 }
 
 int main() {
-    int n = 2;
+    int n = 4;
     int N = 1e7;  // Number of flips
     
     // Generate trivial decomposition
