@@ -3,6 +3,7 @@
 
 #include <vector>
 #include <cstdint>
+#include <cassert>
 
 using U64 = std::uint64_t;
 
@@ -57,6 +58,7 @@ public:
 
     void addx(U64 k, int v) {
         int base = static_cast<int>(lasthash);
+        assert(count[base] < BucketStride && "Bucket overflow");
         int idx = base + count[base];
         key[idx] = k;
         value[idx] = v;
