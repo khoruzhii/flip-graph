@@ -3,16 +3,29 @@
 #include <chrono>
 #include <random>
 #include "field.h"
-#include "scheme.h"
 
-#if   defined(SYM)
-    #include "utils_sym.h"
-#elif defined(ACOM) 
-    #include "utils_acom.h"
-#elif defined(AAT) 
-    #include "utils_aat.h"
+#if defined(QUAD)
+    #include "scheme_quad.h"
+    #if   defined(SYM)
+        #include "utils_sym_quad.h"
+    #elif defined(ACOM) 
+        #include "utils_acom_quad.h"
+    #elif defined(AAT) 
+        #include "utils_aat_quad.h"
+    #else
+        #include "utils_gmm_quad.h"
+    #endif
 #else
-    #include "utils.h"
+    #include "scheme.h"
+    #if   defined(SYM)
+        #include "utils_sym.h"
+    #elif defined(ACOM) 
+        #include "utils_acom.h"
+    #elif defined(AAT) 
+        #include "utils_aat.h"
+    #else
+        #include "utils_gmm.h"
+    #endif
 #endif
 
 #ifdef MOD3
@@ -36,6 +49,7 @@ int main() {
     
     // Generate trivial decomposition
     auto data = generate_trivial_decomposition(n);
+
     // print_data(data);
     
     // for (int j = 0; j < 100; ++j) {  // Uncomment for multiple runs

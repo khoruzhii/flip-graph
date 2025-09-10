@@ -1,4 +1,4 @@
-// utils.h
+// utils_gmm.h
 #pragma once
 
 #include <vector>
