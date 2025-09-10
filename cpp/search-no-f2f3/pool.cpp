@@ -64,7 +64,7 @@ void save_pool(const std::vector<SchemeData<Field>>& pool, int rank, int n) {
     if (pool.empty()) return;
     
     // Create pool directory if it doesn't exist
-    std::filesystem::create_directories("pool");
+    std::filesystem::create_directories("pool/" + suffix);
     
     // Prepare data for saving
     std::vector<U64> save_data;
