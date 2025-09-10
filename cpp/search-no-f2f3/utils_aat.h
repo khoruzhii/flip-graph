@@ -6,6 +6,7 @@
 #include <iostream>
 #include <chrono>
 #include "field.h"
+#include <string>
 
 // This header provides a trivial rank-1 decomposition for the bilinear map
 //   (A, B) ↦ Up(A * B^T) ∈ Sym_n,
@@ -25,6 +26,8 @@
 //   w has 1 at pack(i, j)  → symmetric packed index
 //
 // Verification checks Brent equations for the tensor of Up(A B^T).
+
+std::string suffix = "aat";
 
 // Convert symmetric matrix index (i,j) where i<=j to packed index in [0, n(n+1)/2)
 inline int sym_to_packed(int i, int j, int n) {

@@ -4,6 +4,7 @@
 #include <vector>
 #include <cstdint>
 #include <iostream>
+#include <string>
 #include "field.h"
 
 // Layout:
@@ -11,6 +12,8 @@
 //     A-block: indices 0 .. n*n-1   (alpha_A = i*n + j)
 //     B-block: indices n*n .. 2*n*n-1 (alpha_B = n*n + j*n + k)
 // - Output C has length n*n with linear index gamma = i*n + k.
+
+std::string suffix = "gmm_quad";
 
 // Generate trivial commutative-quadratic decomposition for C = A * B.
 inline std::vector<U64> generate_trivial_decomposition(int n) {

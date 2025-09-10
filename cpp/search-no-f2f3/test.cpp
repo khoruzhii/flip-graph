@@ -9,7 +9,7 @@
     #if   defined(SYM)
         #include "utils_sym_quad.h"
     #elif defined(ACOM) 
-        #include "utils_acom_quad.h"
+        assert(!"Not implemented acom with quad.");
     #elif defined(AAT) 
         #include "utils_aat_quad.h"
     #else

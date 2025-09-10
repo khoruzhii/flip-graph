@@ -97,7 +97,7 @@ void save_pool(const std::vector<SchemeData<Field>>& pool, int rank, int n) {
     
     // Construct filename
     std::string field_name = field_traits<Field>::is_mod2 ? "mod2" : "mod3";
-    std::string filename = "pool/n" + std::to_string(n) + "_" + field_name + 
+    std::string filename = "pool/" + suffix + "/" + "n" + std::to_string(n) + "_" + field_name + 
                           "_rank" + std::to_string(rank) + ".npy";
     
     // Calculate shape

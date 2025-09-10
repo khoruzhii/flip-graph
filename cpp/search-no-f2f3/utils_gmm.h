@@ -6,6 +6,9 @@
 #include <iostream>
 #include <chrono>
 #include "field.h"
+#include <string>
+
+std::string suffix = "gmm";
 
 // Generate trivial decomposition for n×n matrix multiplication
 // Returns binary data as U64 (will be converted to Field in Scheme constructor)

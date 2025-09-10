@@ -5,7 +5,10 @@
 #include <cstdint>
 #include <iostream>
 #include <chrono>
+#include <string>
 #include "field.h"
+
+std::string suffix = "sym";
 
 // Convert symmetric matrix index (i,j) where i<=j to packed index
 inline int sym_to_packed(int i, int j, int n) {

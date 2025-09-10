@@ -4,7 +4,10 @@
 #include <vector>
 #include <cstdint>
 #include <iostream>
+#include <string>
 #include "field.h"
+
+std::string suffix = "sym_quad";
 
 // Convert symmetric matrix index (i,j) where i<=j to packed index in [0, n(n+1)/2)
 inline int sym_to_packed(int i, int j, int n) {
