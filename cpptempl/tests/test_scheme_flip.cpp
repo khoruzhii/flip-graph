@@ -406,6 +406,71 @@ void test_edge_cases(std::random_device& rd) {
     std::cout << "✅ Edge cases test passed\n\n";
 }
 
+template<int N>
+void test_reduction() {
+    std::cout << "===  Reduce Test (F_" << N << ") ===\n";
+
+    // Test 1 (4x4)
+    {
+        Scheme<B<N>, TestMap<B<N>>> scheme(4);
+
+        int initial_rank = scheme.get_rank();
+        int iteration_count = 0;
+
+        for (int i = 0; i < 1000; ++i) {
+            if (scheme.flip()) {
+                scheme.reduction();
+                iteration_count++;
+            } else {
+                break;
+            }
+        }
+
+        int final_rank = scheme.get_rank();
+        std::cout << "  Total iterations: " << iteration_count << "\n";
+        std::cout << "  Rank: " << initial_rank << "→" << final_rank << "\n";
+
+        bool correct = verify_scheme(scheme.get_data(), 4);
+
+        std::cout << "  Final correctness: " << (correct ? "PASS" : "FAIL") << "\n";
+        assert(correct);
+    }
+
+    // Test 2 (4x4 10000000 flips)
+    {
+        Scheme<B<N>, TestMap<B<N>>> scheme(4);
+
+        int initial_rank = scheme.get_rank();
+        int iteration_count = 0;
+        int reduce_count = 0;
+
+        for (int i = 0; i < 10000000; ++i) {
+            if (scheme.flip()) {
+                iteration_count++;
+                if (i % 2 == 0) {
+                    if(scheme.reduction()) {
+                        iteration_count++;
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+
+        int final_rank = scheme.get_rank();
+        std::cout << "  Total iterations: " << iteration_count << "\n";
+        std::cout << "  Rank: " << initial_rank << "→" << final_rank << "\n";
+        std::cout << "  Total reduce count: " << reduce_count << "\n";
+
+        bool correct = verify_scheme(scheme.get_data(), 4);
+
+        std::cout << "  Final correctness: " << (correct ? "PASS" : "FAIL") << "\n";
+        assert(correct);
+    }
+
+    std::cout << "✅ Reduce test passed\n\n";
+}
+
 // =============================================================================
 // TEST RUNNER FOR SPECIFIC FIELD
 // =============================================================================
@@ -424,6 +489,7 @@ void run_all_flip_tests() {
         test_reduction_tracking<N>(rd);
         test_flip_performance<N>(rd);
         test_edge_cases<N>(rd);
+        test_reduction<N>();
         
         std::cout << "🎉 ALL B<" << N << "> FLIP TESTS PASSED! 🎉\n\n";
         

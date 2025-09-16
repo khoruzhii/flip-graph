@@ -1,14 +1,21 @@
 #pragma once
+#include <utils.h>
 #include <vector>
 #include <random>
 #include <cstdint>
 #include <array>
 #include <type_traits>
 
+
 template<typename FieldType, typename MapType>
 class Scheme {
 public:
     Scheme(const std::vector<FieldType>& initial, uint32_t seed, int n);
+
+    Scheme() : Scheme(4) {};
+
+    explicit Scheme(int n) : Scheme(generate_trivial_decomposition<FieldType>(n), 
+                                    std::random_device{}(), n) {};
     
     bool flip();
     bool plus();
@@ -146,6 +153,23 @@ bool Scheme<FieldType, MapType>::flip() {
 }
 
 template<typename FieldType, typename MapType>
+bool Scheme<FieldType, MapType>::reduction() {
+    std::array<int, 3> p{0, 1, 2};
+    std::shuffle(p.begin(), p.end(), rng);
+
+    if (reduction_private(p[0])) {
+        return true;
+    }
+    if (reduction_private(p[1])) {
+        return true;
+    }
+    if (reduction_private(p[2])) {
+        return true;
+    }
+    return false;
+}
+
+template<typename FieldType, typename MapType>
 bool Scheme<FieldType, MapType>::flip_private(int type) {
     auto& pos_u             = pos[type];
     auto& flippable_u = flippable[type];
@@ -221,6 +245,70 @@ bool Scheme<FieldType, MapType>::flip_private(int type) {
     add_element(idw1, new_w1);
     add_element(idv2, new_v2);
     
+    return true;
+}
+
+template<typename FieldType, typename MapType>
+bool Scheme<FieldType, MapType>::reduction_private(int type) {
+    int idu = type;
+    int idv = (type + 1) % 3;
+    int idw = (type + 2) % 3;
+
+    struct PairHash {
+        size_t operator()(const std::pair<FieldType, FieldType>& p) const {
+            auto h1 = std::hash<FieldType>{}(p.first);
+            auto h2 = std::hash<FieldType>{}(p.second);
+            return h1 ^ (h2 << 1); // Простая комбинация хешей
+        }
+    };
+
+    std::unordered_map<std::pair<FieldType, FieldType>, int, PairHash> pair_pos;
+
+    int i1 = -1, i2 = -1;
+
+    for (int i = 0; i < rank; ++i) {
+        std::pair<FieldType, FieldType> p(data[i * 3 + idu], data[i * 3 + idv]);
+        if (pair_pos.find(p) == pair_pos.end()) {
+            pair_pos[p] = i;
+        } else {
+            i1 = pair_pos[p];
+            i2 = i;
+            break;
+        }
+    }
+
+    if (i1 == -1) {
+        return false;
+    }
+
+    FieldType u1 = data[i1 * 3 + idu];
+    FieldType v1 = data[i1 * 3 + idv];
+    FieldType w1 = data[i1 * 3 + idw];
+    FieldType u2 = data[i2 * 3 + idu];
+    FieldType v2 = data[i2 * 3 + idv];
+    FieldType w2 = data[i2 * 3 + idw];
+
+    assert(u1 == u2 && v1 == v2);
+
+    if (w1 != w2) {
+        FieldType new_w1 = w1 + w2;
+        delete_element(i1 * 3 + idw);
+        add_element(i1 * 3 + idw, new_w1);
+
+        remove_tensor(i2);
+        
+        return true;
+    }
+
+    if (i1 < i2) {
+        std::swap(i1, i2);
+    }
+
+    remove_tensor(i1);
+    remove_tensor(i2);
+
+    assert(i1 != i2);
+
     return true;
 }
 
