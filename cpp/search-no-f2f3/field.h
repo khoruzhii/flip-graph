@@ -62,9 +62,43 @@ inline B3 operator-(const B3& x) { return B3{x.hi, x.lo}; }
 inline B3 operator-(const B3& a, const B3& b) { return a + (-b); }
 
 // Pack B3 into U64 (half bits for lo, half for hi)
+// inline U64 pack_field(const B3& b) {
+//     return (b.hi << 32) | (b.lo & 0xFFFFFFFF);
+// }
+// inline U64 pack_field(const B3& b) {
+//     const U64 kMul = 0x9ddfea08eb382d69ULL;
+//     U64 a1 = (b.hi ^ (b.lo * kMul)) * kMul;
+//     a1 ^= (a1 >> 47);
+//     U64 a2 = (b.lo ^ a1) * kMul;
+//     a2 ^= (a2 >> 47);
+//     a2 *= kMul;
+//     return a2;
+// }
 inline U64 pack_field(const B3& b) {
-    return (b.hi << 32) | (b.lo & 0xFFFFFFFF);
+    // Assumes __int128 is available. Uses wyhash-style MUM mixer + strong avalanche.
+    constexpr U64 k0 = 0xa0761d6478bd642full;
+    constexpr U64 k1 = 0xe7037ed1a0b428dbull;
+    constexpr U64 k2 = 0x8ebc6af09c88c6e3ull;
+    constexpr U64 k3 = 0x589965cc75374cc3ull;
+
+    auto mum = [](U64 a, U64 b) -> U64 {
+        __uint128_t r = ( (__uint128_t)a * (__uint128_t)b );
+        return (U64)r ^ (U64)(r >> 64); // xor-fold high and low halves
+    };
+
+    // Collapse two 64-bit lanes with independent secrets
+    U64 h = mum(b.hi ^ k0, b.lo ^ k1);
+    // One more non-linear round to break remaining structure
+    h = mum(h ^ k2, k3);
+
+    // Final avalanche to spread any remaining linearity
+    h ^= h >> 29;
+    h *= 0x94d049bb133111ebull; // odd constant from splitmix64
+    h ^= h >> 31;
+
+    return h;
 }
+
 
 // Unpack U64 to B3
 inline B3 unpack_field_b3(U64 packed) {
@@ -82,14 +116,14 @@ struct field_traits;
 template<>
 struct field_traits<B2> {
     static constexpr bool is_mod2 = true;
-    static B2 unpack(U64 v) { return unpack_field_b2(v); }
+    // static B2 unpack(U64 v) { return unpack_field_b2(v); }
     static B2 from_u64(U64 v) { return to_field_b2(v); }
 };
 
 template<>
 struct field_traits<B3> {
     static constexpr bool is_mod2 = false;
-    static B3 unpack(U64 v) { return unpack_field_b3(v); }
+    // static B3 unpack(U64 v) { return unpack_field_b3(v); }
     static B3 from_u64(U64 v) { return to_field_b3(v); }
 };
 
